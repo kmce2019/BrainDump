@@ -1,0 +1,30 @@
+name = "braindump"
+main = "src/worker.ts"
+compatibility_date = "2025-06-01"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "braindump"
+database_id = "replace-with-your-d1-database-id"
+
+# Optional queue. If omitted, captures still save instantly.
+# [[queues.producers]]
+# binding = "PROCESS_QUEUE"
+# queue = "braindump-process"
+#
+# [[queues.consumers]]
+# queue = "braindump-process"
+# max_batch_size = 10
+# max_batch_timeout = 30
+
+# Optional Workers AI binding.
+# [ai]
+# binding = "AI"
+
+[vars]
+AI_PROVIDER = "none"
