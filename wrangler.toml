@@ -1,4 +1,5 @@
 name = "braindump"
+account_id = "7254ceea5f1535f5f6c49eb989cc96e0"
 main = "src/worker.ts"
 compatibility_date = "2025-06-01"
 
@@ -10,7 +11,7 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "braindump"
-database_id = "replace-with-your-d1-database-id"
+database_id = "8159134e-08f4-4cf1-898d-51075bb3aa72"
 
 # Optional queue. If omitted, captures still save instantly.
 # [[queues.producers]]
