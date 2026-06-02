@@ -29,3 +29,4 @@ database_id = "c0c90827-ea2a-4586-b3c1-6fc4f6e3d9f0"
 
 [vars]
 AI_PROVIDER = "none"
+APP_BASE_URL = "https://braindump.boxospam.workers.dev"
