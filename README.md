@@ -14,6 +14,8 @@ The MVP is built for Cloudflare Workers, D1, and optional Queues. Telegram is th
 
 Default `AI_PROVIDER` is `none`.
 
+Current Worker URL: `https://braindump.boxospam.workers.dev`.
+
 ## Setup
 
 Install dependencies:
