@@ -286,12 +286,49 @@ h1 { letter-spacing: 0; }
 }
 .row {
   display: block;
-  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+  border-color: var(--type-border, var(--border));
+  box-shadow:
+    inset 0 0 0 1px var(--type-outline, transparent),
+    0 20px 60px rgba(0, 0, 0, 0.2);
+  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
 }
 .row:hover {
   transform: translateY(-1px);
-  border-color: rgba(56, 189, 248, 0.42);
+  border-color: var(--type-border-strong, rgba(56, 189, 248, 0.42));
+  box-shadow:
+    inset 0 0 0 1px var(--type-border-strong, rgba(56, 189, 248, 0.42)),
+    0 22px 64px rgba(0, 0, 0, 0.22);
   background: rgba(255, 255, 255, 0.075);
+}
+.row.type-task {
+  --type-border: rgba(251, 146, 60, 0.55);
+  --type-border-strong: rgba(251, 146, 60, 0.82);
+  --type-outline: rgba(251, 146, 60, 0.16);
+}
+.row.type-idea {
+  --type-border: rgba(52, 211, 153, 0.52);
+  --type-border-strong: rgba(52, 211, 153, 0.78);
+  --type-outline: rgba(52, 211, 153, 0.14);
+}
+.row.type-reminder {
+  --type-border: rgba(244, 114, 182, 0.5);
+  --type-border-strong: rgba(244, 114, 182, 0.76);
+  --type-outline: rgba(244, 114, 182, 0.13);
+}
+.row.type-question {
+  --type-border: rgba(56, 189, 248, 0.5);
+  --type-border-strong: rgba(56, 189, 248, 0.78);
+  --type-outline: rgba(56, 189, 248, 0.13);
+}
+.row.type-project {
+  --type-border: rgba(129, 140, 248, 0.54);
+  --type-border-strong: rgba(129, 140, 248, 0.8);
+  --type-outline: rgba(129, 140, 248, 0.14);
+}
+.row.type-note {
+  --type-border: rgba(148, 163, 184, 0.42);
+  --type-border-strong: rgba(148, 163, 184, 0.68);
+  --type-outline: rgba(148, 163, 184, 0.1);
 }
 .row h2 {
   font-size: 1.12rem;
@@ -316,10 +353,12 @@ h1 { letter-spacing: 0; }
   background: var(--accent-soft);
   border-color: rgba(56, 189, 248, 0.36);
 }
-.type-badge.task { background: rgba(52, 211, 153, 0.16); border-color: rgba(52, 211, 153, 0.34); }
-.type-badge.idea { background: rgba(251, 191, 36, 0.14); border-color: rgba(251, 191, 36, 0.34); }
+.type-badge.task { background: rgba(251, 146, 60, 0.16); border-color: rgba(251, 146, 60, 0.38); }
+.type-badge.idea { background: rgba(52, 211, 153, 0.16); border-color: rgba(52, 211, 153, 0.36); }
 .type-badge.project { background: rgba(129, 140, 248, 0.16); border-color: rgba(129, 140, 248, 0.34); }
 .type-badge.reminder { background: rgba(244, 114, 182, 0.14); border-color: rgba(244, 114, 182, 0.34); }
+.type-badge.question { background: rgba(56, 189, 248, 0.14); border-color: rgba(56, 189, 248, 0.34); }
+.type-badge.note { background: rgba(148, 163, 184, 0.12); border-color: rgba(148, 163, 184, 0.28); }
 .status-badge.done { color: var(--success); }
 .status-badge.archived, .status-badge.dismissed { color: var(--text-muted); }
 .right-panel {

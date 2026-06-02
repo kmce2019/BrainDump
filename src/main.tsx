@@ -32,6 +32,7 @@ type StatsResponse = { today: number; openTasks: number; unprocessed: number; id
 
 const typeOptions = ["note", "task", "idea", "reminder", "question", "project"];
 const statusOptions = ["inbox", "active", "done", "dismissed", "archived"];
+const openStatusOptions = ["inbox", "active"];
 const filterOptions = [
   { label: "All", value: "" },
   { label: "Tasks", value: "task" },
@@ -109,6 +110,7 @@ function App() {
         {route === "/ideas" && <Feed fixedType="idea" title="Ideas" />}
         {route === "/reminders" && <Feed fixedType="reminder" title="Reminders" />}
         {route === "/projects" && <Feed fixedType="project" title="Projects" />}
+        {route === "/archive" && <Feed title="Archive" initialStatus="archived" includeClosed />}
         {route === "/review" && <ReviewPage />}
         {route.startsWith("/capture/") && <CaptureDetail id={route.split("/")[2]} />}
         {route === "/settings" && <Settings />}
@@ -193,7 +195,7 @@ function Dashboard({ nav }: { nav: (to: string) => void }) {
   const [q, setQ] = useState("");
   const [type, setType] = useState("");
   const query = useMemo(() => {
-    const p = new URLSearchParams({ limit: "12" });
+    const p = new URLSearchParams({ limit: "12", open_only: "1" });
     if (q) p.set("q", q);
     if (type) p.set("type", type);
     return p.toString();
@@ -239,29 +241,50 @@ function CapturePage() {
   return <section className="hero compact"><p className="eyebrow">Quick capture</p><h1>Send it now. Sort it later.</h1><QuickCapture /><StatusPills /></section>;
 }
 
-function Feed({ fixedType, title = "Feed", processingStatus, includePendingActions }: { fixedType?: string; title?: string; processingStatus?: string; includePendingActions?: boolean }) {
+function Feed({
+  fixedType,
+  title = "Feed",
+  processingStatus,
+  includePendingActions,
+  initialStatus = "",
+  includeClosed = false
+}: {
+  fixedType?: string;
+  title?: string;
+  processingStatus?: string;
+  includePendingActions?: boolean;
+  initialStatus?: string;
+  includeClosed?: boolean;
+}) {
   const [items, setItems] = useState<Capture[]>([]);
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState(initialStatus);
   const [source, setSource] = useState("");
   const [type, setType] = useState(fixedType || "");
   const query = useMemo(() => {
     const p = new URLSearchParams({ limit: "50" });
     if (q) p.set("q", q);
     if (status) p.set("status", status);
+    else if (!includeClosed) p.set("open_only", "1");
     if (source) p.set("source", source);
     if (type) p.set("type", type);
     if (processingStatus) p.set("processing_status", processingStatus);
     if (includePendingActions) p.set("pending_actions", "1");
     return p.toString();
-  }, [q, status, source, type, processingStatus, includePendingActions]);
+  }, [q, status, source, type, processingStatus, includePendingActions, includeClosed]);
   useEffect(() => { fetch(`/api/captures?${query}`).then((r) => r.json() as Promise<CaptureListResponse>).then((d) => setItems(d.captures || [])); }, [query]);
   return (
     <section className="main-column feed-page">
       <header className="topline"><div><p className="eyebrow">BrainDump</p><h1>{title}</h1></div></header>
       <FeedControls q={q} setQ={setQ} type={type} setType={setType} fixedType={fixedType} />
       <div className="card filters">
-        <select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Any status</option>{statusOptions.map((s) => <option key={s}>{s}</option>)}</select>
+        <select value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">{includeClosed ? "Any status" : "Open statuses"}</option>
+          {(includeClosed ? statusOptions : openStatusOptions).map((s) => <option key={s}>{s}</option>)}
+          {!includeClosed && <option value="done">done</option>}
+          {!includeClosed && <option value="dismissed">dismissed</option>}
+          {!includeClosed && <option value="archived">archived</option>}
+        </select>
         <input placeholder="Source" value={source} onChange={(e) => setSource(e.target.value)} />
       </div>
       <CaptureList items={items} />
@@ -290,7 +313,7 @@ function CaptureList({ items }: { items: Capture[] }) {
 function CaptureRow({ item }: { item: Capture }) {
   const tags = item.tags?.length ? item.tags : [item.category].filter(Boolean) as string[];
   return (
-    <a className="card row" href={`/capture/${item.id}`} onClick={(e) => { e.preventDefault(); history.pushState(null, "", `/capture/${item.id}`); dispatchEvent(new PopStateEvent("popstate")); }}>
+    <a className={`card row type-${item.type}`} href={`/capture/${item.id}`} onClick={(e) => { e.preventDefault(); history.pushState(null, "", `/capture/${item.id}`); dispatchEvent(new PopStateEvent("popstate")); }}>
       <div className="row-top">
         <span className={`type-badge ${item.type}`}>#{item.type}</span>
         {item.status !== "inbox" && <span className={`status-badge ${item.status}`}>{item.status}</span>}

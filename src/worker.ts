@@ -180,6 +180,9 @@ async function listCaptures(url: URL, env: Env) {
   addFilter(where, args, "status", url.searchParams.get("status"), statuses);
   addFilter(where, args, "source", url.searchParams.get("source"));
   addFilter(where, args, "processing_status", url.searchParams.get("processing_status"), processingStatuses);
+  if (!url.searchParams.get("status") && url.searchParams.get("open_only") === "1") {
+    where.push("status IN ('inbox', 'active')");
+  }
   const q = url.searchParams.get("q")?.trim();
   if (q) {
     where.push("(raw_text LIKE ? OR title LIKE ? OR summary LIKE ? OR category LIKE ?)");
