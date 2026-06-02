@@ -10,8 +10,8 @@ not_found_handling = "single-page-application"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "braindump"
-database_id = "8159134e-08f4-4cf1-898d-51075bb3aa72"
+database_name = "braindump-db"
+database_id = "c0c90827-ea2a-4586-b3c1-6fc4f6e3d9f0"
 
 # Optional queue. If omitted, captures still save instantly.
 # [[queues.producers]]
