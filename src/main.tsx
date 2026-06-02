@@ -32,9 +32,37 @@ type StatsResponse = { today: number; openTasks: number; unprocessed: number; id
 
 const typeOptions = ["note", "task", "idea", "reminder", "question", "project"];
 const statusOptions = ["inbox", "active", "done", "dismissed", "archived"];
+const filterOptions = [
+  { label: "All", value: "" },
+  { label: "Tasks", value: "task" },
+  { label: "Ideas", value: "idea" },
+  { label: "Reminders", value: "reminder" },
+  { label: "Projects", value: "project" },
+  { label: "Notes", value: "note" },
+  { label: "Questions", value: "question" }
+];
 
 function preview(capture: Capture) {
-  return capture.title || capture.raw_text.slice(0, 120);
+  const text = capture.title || capture.raw_text.split("\n")[0] || capture.raw_text;
+  return text.length > 80 ? `${text.slice(0, 80)}...` : text;
+}
+
+function summary(capture: Capture) {
+  return capture.summary || capture.raw_text;
+}
+
+function sourceLabel(source: string) {
+  if (source === "api") return "API";
+  return source ? source.charAt(0).toUpperCase() + source.slice(1) : "Web";
+}
+
+function captureTime(value: string) {
+  const date = new Date(value);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  const day = sameDay ? "Today" : date.toLocaleDateString([], { month: "short", day: "numeric" });
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${day} · ${time}`;
 }
 
 function path() {
@@ -63,10 +91,13 @@ function App() {
   return (
     <div className="app">
       <aside className="nav">
-        <button className="brand" onClick={() => nav("/")}>BrainDump</button>
-        {["/", "/capture", "/feed", "/tasks", "/ideas", "/reminders", "/projects", "/review", "/settings"].map((item) => (
+        <button className="brand" onClick={() => nav("/")}>
+          <span className="brand-mark">B</span>
+          <span>BrainDump</span>
+        </button>
+        {["/feed", "/tasks", "/ideas", "/reminders", "/review", "/settings"].map((item) => (
           <button key={item} className={route === item ? "active" : ""} onClick={() => nav(item)}>
-            {item === "/" ? "Dashboard" : item.slice(1)}
+            {item.slice(1)}
           </button>
         ))}
       </aside>
@@ -78,7 +109,7 @@ function App() {
         {route === "/ideas" && <Feed fixedType="idea" title="Ideas" />}
         {route === "/reminders" && <Feed fixedType="reminder" title="Reminders" />}
         {route === "/projects" && <Feed fixedType="project" title="Projects" />}
-        {route === "/review" && <Feed processingStatus="processed" title="Review" />}
+        {route === "/review" && <ReviewPage />}
         {route.startsWith("/capture/") && <CaptureDetail id={route.split("/")[2]} />}
         {route === "/settings" && <Settings />}
       </main>
@@ -103,6 +134,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
     <main className="login">
       <form className="card login-card" onSubmit={submit}>
         <h1>BrainDump</h1>
+        <p>Send it now. Sort it later.</p>
         <input type="password" placeholder="App password" value={password} onChange={(e) => setPassword(e.target.value)} />
         {error && <p className="error">{error}</p>}
         <button type="submit">Log in</button>
@@ -115,28 +147,42 @@ function QuickCapture({ onSaved }: { onSaved?: () => void }) {
   const [rawText, setRawText] = useState("");
   const [type, setType] = useState("note");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!rawText.trim()) return;
     setSaving(true);
-    const res = await fetch("/api/captures", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ raw_text: rawText, source: "web", type_hint: type })
-    });
-    setSaving(false);
-    if (res.ok) {
+    setError("");
+    setToast("");
+    try {
+      const res = await fetch("/api/captures", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ raw_text: rawText, source: "web", type_hint: type })
+      });
+      if (!res.ok) throw new Error("Save failed");
       setRawText("");
+      setToast("Saved to your brain dump.");
       onSaved?.();
+      window.setTimeout(() => setToast(""), 2200);
+    } catch {
+      setError("Could not save that capture. Try again.");
+    } finally {
+      setSaving(false);
     }
   }
   return (
     <form className="card capture-card" onSubmit={submit}>
-      <textarea autoFocus placeholder="Drop a thought, task, reminder, idea, or question..." value={rawText} onChange={(e) => setRawText(e.target.value)} />
+      <label className="sr-only" htmlFor="quick-capture">Capture text</label>
+      <textarea id="quick-capture" autoFocus placeholder="What’s on your mind?" value={rawText} onChange={(e) => setRawText(e.target.value)} />
       <div className="capture-actions">
-        <select value={type} onChange={(e) => setType(e.target.value)}>{typeOptions.map((t) => <option key={t}>{t}</option>)}</select>
-        <button disabled={saving || !rawText.trim()}>{saving ? "Saving..." : "Save capture"}</button>
+        <label className="sr-only" htmlFor="capture-type">Capture type</label>
+        <select id="capture-type" value={type} onChange={(e) => setType(e.target.value)}>{typeOptions.map((t) => <option key={t}>{t}</option>)}</select>
+        <button disabled={saving || !rawText.trim()}>{saving ? "Saving..." : "Capture"}</button>
       </div>
+      {error && <p className="error">{error}</p>}
+      {toast && <p className="toast">{toast}</p>}
     </form>
   );
 }
@@ -144,26 +190,44 @@ function QuickCapture({ onSaved }: { onSaved?: () => void }) {
 function Dashboard({ nav }: { nav: (to: string) => void }) {
   const [items, setItems] = useState<Capture[]>([]);
   const [stats, setStats] = useState({ today: 0, openTasks: 0, unprocessed: 0, ideasWeek: 0 });
+  const [q, setQ] = useState("");
+  const [type, setType] = useState("");
+  const query = useMemo(() => {
+    const p = new URLSearchParams({ limit: "12" });
+    if (q) p.set("q", q);
+    if (type) p.set("type", type);
+    return p.toString();
+  }, [q, type]);
   async function load() {
-    const [recent, statsRes] = await Promise.all([fetch("/api/captures?limit=8"), fetch("/api/stats")]);
+    const [recent, statsRes] = await Promise.all([fetch(`/api/captures?${query}`), fetch("/api/stats")]);
     const recentData = await recent.json() as CaptureListResponse;
     const statsData = await statsRes.json() as StatsResponse;
     setItems(recentData.captures || []);
     setStats(statsData);
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [query]);
   return (
-    <>
-      <header className="topline"><h1>Private capture inbox</h1><button onClick={() => nav("/feed")}>Open feed</button></header>
-      <QuickCapture onSaved={load} />
-      <section className="stats">
-        <Stat label="Today" value={stats.today} />
-        <Stat label="Open tasks" value={stats.openTasks} />
-        <Stat label="Unprocessed" value={stats.unprocessed} />
-        <Stat label="Ideas this week" value={stats.ideasWeek} />
+    <div className="dashboard-grid">
+      <section className="main-column">
+        <section className="hero">
+          <div className="hero-copy">
+            <p className="eyebrow">BrainDump</p>
+            <h1>Send it now. Sort it later.</h1>
+            <p>Capture thoughts, tasks, ideas, reminders, and project fragments from the web, Telegram, or your phone shortcut.</p>
+          </div>
+          <QuickCapture onSaved={load} />
+          <p className="helper-text">Saved instantly. Organized later.</p>
+          <StatusPills />
+        </section>
+        <FeedControls q={q} setQ={setQ} type={type} setType={setType} />
+        <div className="section-head">
+          <h2>Latest dumps</h2>
+          <button className="ghost" onClick={() => nav("/feed")}>Open feed</button>
+        </div>
+        <CaptureList items={items} />
       </section>
-      <CaptureList items={items} />
-    </>
+      <RightPanel stats={stats} />
+    </div>
   );
 }
 
@@ -172,7 +236,7 @@ function Stat({ label, value }: { label: string; value: number }) {
 }
 
 function CapturePage() {
-  return <><h1>Quick Capture</h1><QuickCapture /></>;
+  return <section className="hero compact"><p className="eyebrow">Quick capture</p><h1>Send it now. Sort it later.</h1><QuickCapture /><StatusPills /></section>;
 }
 
 function Feed({ fixedType, title = "Feed", processingStatus, includePendingActions }: { fixedType?: string; title?: string; processingStatus?: string; includePendingActions?: boolean }) {
@@ -193,33 +257,104 @@ function Feed({ fixedType, title = "Feed", processingStatus, includePendingActio
   }, [q, status, source, type, processingStatus, includePendingActions]);
   useEffect(() => { fetch(`/api/captures?${query}`).then((r) => r.json() as Promise<CaptureListResponse>).then((d) => setItems(d.captures || [])); }, [query]);
   return (
-    <>
-      <header className="topline"><h1>{title}</h1></header>
+    <section className="main-column feed-page">
+      <header className="topline"><div><p className="eyebrow">BrainDump</p><h1>{title}</h1></div></header>
+      <FeedControls q={q} setQ={setQ} type={type} setType={setType} fixedType={fixedType} />
       <div className="card filters">
-        <input placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} />
-        {!fixedType && <select value={type} onChange={(e) => setType(e.target.value)}><option value="">Any type</option>{typeOptions.map((t) => <option key={t}>{t}</option>)}</select>}
         <select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Any status</option>{statusOptions.map((s) => <option key={s}>{s}</option>)}</select>
         <input placeholder="Source" value={source} onChange={(e) => setSource(e.target.value)} />
       </div>
       <CaptureList items={items} />
-    </>
+    </section>
+  );
+}
+
+function ReviewPage() {
+  return (
+    <section className="main-column feed-page">
+      <section className="card review-note">
+        <p className="eyebrow">Review</p>
+        <h1>AI is currently off.</h1>
+        <p>Captures are still saved instantly. When an AI provider is configured, this view can help review processed, failed, and unprocessed items.</p>
+      </section>
+      <Feed processingStatus="unprocessed" title="Unprocessed captures" />
+    </section>
   );
 }
 
 function CaptureList({ items }: { items: Capture[] }) {
-  if (!items.length) return <div className="empty">No captures yet.</div>;
+  if (!items.length) return <div className="empty">Nothing dumped yet. Send a thought from Telegram or type one above.</div>;
   return <section className="list">{items.map((item) => <CaptureRow key={item.id} item={item} />)}</section>;
 }
 
 function CaptureRow({ item }: { item: Capture }) {
+  const tags = item.tags?.length ? item.tags : [item.category].filter(Boolean) as string[];
   return (
     <a className="card row" href={`/capture/${item.id}`} onClick={(e) => { e.preventDefault(); history.pushState(null, "", `/capture/${item.id}`); dispatchEvent(new PopStateEvent("popstate")); }}>
+      <div className="row-top">
+        <span className={`type-badge ${item.type}`}>#{item.type}</span>
+        {item.status !== "inbox" && <span className={`status-badge ${item.status}`}>{item.status}</span>}
+      </div>
       <h2>{preview(item)}</h2>
-      <p>{item.summary || item.raw_text}</p>
+      <p>{summary(item)}</p>
+      <div className="meta">{captureTime(item.created_at)} · {sourceLabel(item.source)}</div>
       <div className="badges">
-        {[item.type, item.source, item.status, item.processing_status, ...(item.tags || [])].map((b) => <span key={b}>{b}</span>)}
+        <span>{sourceLabel(item.source)}</span>
+        {tags.map((b) => <span key={b}>#{b}</span>)}
+        <span className={`processing ${item.processing_status}`}>{item.processing_status === "unprocessed" ? "AI off" : item.processing_status}</span>
       </div>
     </a>
+  );
+}
+
+function FeedControls({ q, setQ, type, setType, fixedType }: { q: string; setQ: (q: string) => void; type: string; setType: (type: string) => void; fixedType?: string }) {
+  return (
+    <section className="feed-controls">
+      <label className="sr-only" htmlFor="capture-search">Search captures</label>
+      <input id="capture-search" className="search" placeholder="Search by text, tag, source, or date..." value={q} onChange={(e) => setQ(e.target.value)} />
+      {!fixedType && (
+        <div className="filter-pills">
+          {filterOptions.map((filter) => (
+            <button key={filter.label} className={type === filter.value ? "selected" : ""} onClick={() => setType(filter.value)}>{filter.label}</button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StatusPills() {
+  return (
+    <div className="source-pills">
+      <span>Web Ready</span>
+      <span>Telegram Connected</span>
+      <span>API Ready</span>
+      <span className="ai-off">AI Off</span>
+    </div>
+  );
+}
+
+function RightPanel({ stats }: { stats: StatsResponse }) {
+  return (
+    <aside className="right-panel">
+      <section className="card ready-card">
+        <p className="eyebrow">Always ready</p>
+        <h2>Capture first. Decide later.</h2>
+        <p>Send anything from Telegram, web, or your phone shortcut and it lands here.</p>
+        <StatusPills />
+      </section>
+      <section className="mini-stats">
+        <Stat label="Captures today" value={stats.today} />
+        <Stat label="Open tasks" value={stats.openTasks} />
+        <Stat label="Ideas this week" value={stats.ideasWeek} />
+        <Stat label="Unprocessed" value={stats.unprocessed} />
+      </section>
+      <section className="card telegram-card">
+        <span className="type-badge reminder">#telegram</span>
+        <h2>Telegram Capture</h2>
+        <p>Send a message to your bot and it appears in your feed.</p>
+      </section>
+    </aside>
   );
 }
 
@@ -278,13 +413,21 @@ function Settings() {
   return (
     <section className="card settings">
       <h1>Settings</h1>
-      <p><strong>Capture API:</strong> /api/captures</p>
-      <p><strong>Telegram webhook:</strong> /telegram/webhook</p>
-      <ul>
-        <li>Set APP_PASSWORD and CAPTURE_API_TOKEN as Cloudflare secrets.</li>
-        <li>Set TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, and ALLOWED_TELEGRAM_USER_ID for Telegram.</li>
-        <li>Keep AI_PROVIDER=none unless Ollama or Workers AI is configured.</li>
-      </ul>
+      <div className="settings-grid">
+        <div>
+          <p><strong>App base URL:</strong> {window.location.origin}</p>
+          <p><strong>API capture endpoint:</strong> /api/captures</p>
+          <p><strong>Telegram webhook endpoint:</strong> /telegram/webhook</p>
+          <p><strong>AI provider status:</strong> AI Off</p>
+        </div>
+        <ul className="checklist">
+          <li>Web capture ready</li>
+          <li>API token configured</li>
+          <li>Telegram bot configured</li>
+          <li>Telegram user authorized</li>
+          <li>AI provider configured as none</li>
+        </ul>
+      </div>
     </section>
   );
 }
