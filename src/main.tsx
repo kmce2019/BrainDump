@@ -29,6 +29,8 @@ type ActionItem = {
 type CaptureListResponse = { captures?: Capture[] };
 type CaptureResponse = { capture: Capture };
 type StatsResponse = { today: number; openTasks: number; unprocessed: number; ideasWeek: number };
+type TagSummary = { name: string; count: number };
+type TagsResponse = { tags?: TagSummary[] };
 
 const typeOptions = ["note", "task", "idea", "reminder", "question", "project"];
 const categoryOptions = ["work"];
@@ -97,7 +99,7 @@ function App() {
           <span className="brand-mark">B</span>
           <span>BrainDump</span>
         </button>
-        {["/feed", "/work", "/tasks", "/ideas", "/reminders", "/review", "/settings"].map((item) => (
+        {["/feed", "/work", "/tasks", "/ideas", "/reminders", "/review", "/chat", "/settings"].map((item) => (
           <button key={item} className={route === item ? "active" : ""} onClick={() => nav(item)}>
             {item.slice(1)}
           </button>
@@ -114,6 +116,7 @@ function App() {
         {route === "/projects" && <Feed fixedType="project" title="Projects" />}
         {route === "/archive" && <Feed title="Archive" initialStatus="archived" includeClosed />}
         {route === "/review" && <ReviewPage />}
+        {route === "/chat" && <ChatBridge />}
         {route.startsWith("/capture/") && <CaptureDetail id={route.split("/")[2]} />}
         {route === "/settings" && <Settings />}
       </main>
@@ -167,7 +170,7 @@ function QuickCapture({ onSaved }: { onSaved?: () => void }) {
       });
       if (!res.ok) throw new Error("Save failed");
       setRawText("");
-      setToast("Saved to your brain dump.");
+      setToast("Captured.");
       onSaved?.();
       window.setTimeout(() => setToast(""), 2200);
     } catch {
@@ -179,7 +182,7 @@ function QuickCapture({ onSaved }: { onSaved?: () => void }) {
   return (
     <form className="card capture-card" onSubmit={submit}>
       <label className="sr-only" htmlFor="quick-capture">Capture text</label>
-      <textarea id="quick-capture" autoFocus placeholder="What’s on your mind?" value={rawText} onChange={(e) => setRawText(e.target.value)} />
+      <textarea id="quick-capture" autoFocus placeholder="Text yourself anything. Add #tags to sort it." value={rawText} onChange={(e) => setRawText(e.target.value)} />
       <div className="capture-actions">
         <label className="sr-only" htmlFor="capture-type">Capture type</label>
         <select id="capture-type" value={type} onChange={(e) => setType(e.target.value)}>{typeOptions.map((t) => <option key={t}>{t}</option>)}</select>
@@ -193,44 +196,50 @@ function QuickCapture({ onSaved }: { onSaved?: () => void }) {
 
 function Dashboard({ nav }: { nav: (to: string) => void }) {
   const [items, setItems] = useState<Capture[]>([]);
+  const [tags, setTags] = useState<TagSummary[]>([]);
   const [stats, setStats] = useState({ today: 0, openTasks: 0, unprocessed: 0, ideasWeek: 0 });
   const [q, setQ] = useState("");
   const [type, setType] = useState("");
+  const [tag, setTag] = useState("");
   const query = useMemo(() => {
-    const p = new URLSearchParams({ limit: "12", open_only: "1" });
+    const p = new URLSearchParams({ limit: "30", open_only: "1" });
     if (q) p.set("q", q);
     if (type) p.set("type", type);
+    if (tag) p.set("tag", tag);
     return p.toString();
-  }, [q, type]);
+  }, [q, type, tag]);
   async function load() {
-    const [recent, statsRes] = await Promise.all([fetch(`/api/captures?${query}`), fetch("/api/stats")]);
+    const [recent, statsRes, tagsRes] = await Promise.all([fetch(`/api/captures?${query}`), fetch("/api/stats"), fetch("/api/tags")]);
     const recentData = await recent.json() as CaptureListResponse;
     const statsData = await statsRes.json() as StatsResponse;
+    const tagsData = await tagsRes.json() as TagsResponse;
     setItems(recentData.captures || []);
     setStats(statsData);
+    setTags(tagsData.tags || []);
   }
   useEffect(() => { load(); }, [query]);
   return (
-    <div className="dashboard-grid">
+    <div className="mind-grid">
       <section className="main-column">
-        <section className="hero">
-          <div className="hero-copy">
-            <p className="eyebrow">BrainDump</p>
-            <h1>Send it now. Sort it later.</h1>
-            <p>Capture thoughts, tasks, ideas, reminders, and project fragments from the web, Telegram, or your phone shortcut.</p>
+        <section className="mind-capture">
+          <div className="section-head">
+            <div>
+              <p className="eyebrow">Private feed</p>
+              <h1>Everything in your head.</h1>
+            </div>
+            <button className="ghost" onClick={() => nav("/feed")}>Full feed</button>
           </div>
           <QuickCapture onSaved={load} />
-          <p className="helper-text">Saved instantly. Organized later.</p>
-          <StatusPills />
         </section>
         <FeedControls q={q} setQ={setQ} type={type} setType={setType} />
+        <TagRail tags={tags} activeTag={tag} setTag={setTag} />
         <div className="section-head">
-          <h2>Latest dumps</h2>
-          <button className="ghost" onClick={() => nav("/feed")}>Open feed</button>
+          <h2>{tag ? `#${tag}` : "Latest"}</h2>
+          {(tag || type || q) && <button className="ghost" onClick={() => { setTag(""); setType(""); setQ(""); }}>Clear</button>}
         </div>
         <CaptureList items={items} />
       </section>
-      <RightPanel stats={stats} />
+      <RightPanel stats={stats} tags={tags} setTag={setTag} />
     </div>
   );
 }
@@ -249,6 +258,7 @@ function Feed({
   processingStatus,
   includePendingActions,
   fixedCategory,
+  fixedTag,
   initialStatus = "",
   includeClosed = false
 }: {
@@ -257,6 +267,7 @@ function Feed({
   processingStatus?: string;
   includePendingActions?: boolean;
   fixedCategory?: string;
+  fixedTag?: string;
   initialStatus?: string;
   includeClosed?: boolean;
 }) {
@@ -273,10 +284,11 @@ function Feed({
     if (source) p.set("source", source);
     if (type) p.set("type", type);
     if (fixedCategory) p.set("category", fixedCategory);
+    if (fixedTag) p.set("tag", fixedTag);
     if (processingStatus) p.set("processing_status", processingStatus);
     if (includePendingActions) p.set("pending_actions", "1");
     return p.toString();
-  }, [q, status, source, type, fixedCategory, processingStatus, includePendingActions, includeClosed]);
+  }, [q, status, source, type, fixedCategory, fixedTag, processingStatus, includePendingActions, includeClosed]);
   useEffect(() => { fetch(`/api/captures?${query}`).then((r) => r.json() as Promise<CaptureListResponse>).then((d) => setItems(d.captures || [])); }, [query]);
   return (
     <section className="main-column feed-page">
@@ -322,7 +334,7 @@ function CaptureRow({ item }: { item: Capture }) {
     <a className={`card row type-${item.type}${categoryClass}`} href={`/capture/${item.id}`} onClick={(e) => { e.preventDefault(); history.pushState(null, "", `/capture/${item.id}`); dispatchEvent(new PopStateEvent("popstate")); }}>
       <div className="row-top">
         {item.category && <span className={`type-badge category ${item.category.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`}>#{item.category}</span>}
-        <span className={`type-badge ${item.type}`}>#{item.type}</span>
+        <span className={`type-badge ${item.type}`}>{item.type}</span>
         {item.status !== "inbox" && <span className={`status-badge ${item.status}`}>{item.status}</span>}
       </div>
       <h2>{preview(item)}</h2>
@@ -341,7 +353,7 @@ function FeedControls({ q, setQ, type, setType, fixedType }: { q: string; setQ: 
   return (
     <section className="feed-controls">
       <label className="sr-only" htmlFor="capture-search">Search captures</label>
-      <input id="capture-search" className="search" placeholder="Search by text, tag, source, or date..." value={q} onChange={(e) => setQ(e.target.value)} />
+      <input id="capture-search" className="search" placeholder="Search everything..." value={q} onChange={(e) => setQ(e.target.value)} />
       {!fixedType && (
         <div className="filter-pills">
           {filterOptions.map((filter) => (
@@ -350,6 +362,20 @@ function FeedControls({ q, setQ, type, setType, fixedType }: { q: string; setQ: 
         </div>
       )}
     </section>
+  );
+}
+
+function TagRail({ tags, activeTag, setTag }: { tags: TagSummary[]; activeTag: string; setTag: (tag: string) => void }) {
+  if (!tags.length) return <div className="tag-rail empty-tags">Text #work, #idea, or any hashtag to build your tag list.</div>;
+  return (
+    <div className="tag-rail">
+      <button className={!activeTag ? "selected" : ""} onClick={() => setTag("")}>All tags</button>
+      {tags.map((tag) => (
+        <button key={tag.name} className={activeTag === tag.name ? "selected" : ""} onClick={() => setTag(tag.name)}>
+          <span>#{tag.name}</span><em>{tag.count}</em>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -364,13 +390,13 @@ function StatusPills() {
   );
 }
 
-function RightPanel({ stats }: { stats: StatsResponse }) {
+function RightPanel({ stats, tags, setTag }: { stats: StatsResponse; tags: TagSummary[]; setTag: (tag: string) => void }) {
   return (
     <aside className="right-panel">
       <section className="card ready-card">
-        <p className="eyebrow">Always ready</p>
-        <h2>Capture first. Decide later.</h2>
-        <p>Send anything from Telegram, web, or your phone shortcut and it lands here.</p>
+        <p className="eyebrow">Text interface</p>
+        <h2>Send it. Search it. Tag it.</h2>
+        <p>Telegram captures, web captures, and API posts all land in the same private feed. Hashtags become filters automatically.</p>
         <StatusPills />
       </section>
       <section className="mini-stats">
@@ -380,11 +406,27 @@ function RightPanel({ stats }: { stats: StatsResponse }) {
         <Stat label="Unprocessed" value={stats.unprocessed} />
       </section>
       <section className="card telegram-card">
-        <span className="type-badge reminder">#telegram</span>
-        <h2>Telegram Capture</h2>
-        <p>Send a message to your bot and it appears in your feed.</p>
+        <span className="type-badge reminder">Ollama</span>
+        <h2>GISD Chat</h2>
+        <p>Use your Ollama chat surface alongside BrainDump when a captured thought needs expansion.</p>
+        <a className="link-button" href="https://chat.gisd.tech" target="_blank" rel="noreferrer">Open chat.gisd.tech</a>
+      </section>
+      <section className="card tag-card">
+        <p className="eyebrow">Top tags</p>
+        {tags.slice(0, 8).map((tag) => <button key={tag.name} onClick={() => setTag(tag.name)}>#{tag.name}<span>{tag.count}</span></button>)}
       </section>
     </aside>
+  );
+}
+
+function ChatBridge() {
+  return (
+    <section className="card settings">
+      <p className="eyebrow">Ollama chat</p>
+      <h1>GISD Chat</h1>
+      <p>BrainDump keeps the capture feed. GISD Chat is the connected Ollama surface for expanding, rewriting, or reasoning over what you saved.</p>
+      <a className="link-button" href="https://chat.gisd.tech" target="_blank" rel="noreferrer">Open chat.gisd.tech</a>
+    </section>
   );
 }
 
@@ -449,6 +491,7 @@ function Settings() {
           <p><strong>App base URL:</strong> {window.location.origin}</p>
           <p><strong>API capture endpoint:</strong> /api/captures</p>
           <p><strong>Telegram webhook endpoint:</strong> /telegram/webhook</p>
+          <p><strong>Ollama chat:</strong> https://chat.gisd.tech</p>
           <p><strong>AI provider status:</strong> AI Off</p>
         </div>
         <ul className="checklist">

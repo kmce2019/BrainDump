@@ -38,6 +38,7 @@ type Capture = {
   external_chat_id?: string | null;
   external_message_id?: string | null;
   metadata_json?: string | null;
+  tags?: string[];
 };
 
 const captureTypes = new Set(["note", "task", "idea", "reminder", "question", "project"]);
@@ -58,6 +59,7 @@ export default {
       if (url.pathname.startsWith("/api/")) {
         if (!(await isAuthed(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
         if (url.pathname === "/api/stats" && request.method === "GET") return stats(env);
+        if (url.pathname === "/api/tags" && request.method === "GET") return listTags(env);
         if (url.pathname === "/api/captures" && request.method === "POST") return createCaptureRoute(request, env, ctx);
         if (url.pathname === "/api/captures" && request.method === "GET") return listCaptures(url, env);
 
@@ -165,6 +167,7 @@ async function createCapture(env: Env, input: {
     `INSERT INTO captures (id, raw_text, source, type, category, priority, status, processing_status, created_at, updated_at, external_user_id, external_chat_id, external_message_id, metadata_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(capture.id, capture.raw_text, capture.source, capture.type, capture.category, capture.priority, capture.status, capture.processing_status, capture.created_at, capture.updated_at, capture.external_user_id, capture.external_chat_id, capture.external_message_id, capture.metadata_json).run();
+  capture.tags = await replaceTags(capture.id, [...tagsFromText(capture.raw_text), input.category].filter(Boolean) as string[], env);
   return capture;
 }
 
@@ -184,6 +187,11 @@ async function listCaptures(url: URL, env: Env) {
   addFilter(where, args, "source", url.searchParams.get("source"));
   addFilter(where, args, "processing_status", url.searchParams.get("processing_status"), processingStatuses);
   where.push("NOT (source='telegram' AND lower(trim(raw_text)) IN ('/search', '/help', '/start', '/today'))");
+  const tag = sanitizeTag(url.searchParams.get("tag"));
+  if (tag) {
+    where.push("(lower(category)=lower(?) OR id IN (SELECT capture_id FROM capture_tags JOIN tags ON tags.id=capture_tags.tag_id WHERE tags.name=?))");
+    args.push(tag, tag);
+  }
   const category = sanitizeCategory(url.searchParams.get("category"));
   if (category) {
     where.push("lower(category)=lower(?)");
@@ -204,7 +212,30 @@ async function listCaptures(url: URL, env: Env) {
   const offset = Math.max(Number(url.searchParams.get("offset") || 0), 0);
   const sql = `SELECT * FROM captures ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
   const result = await env.DB!.prepare(sql).bind(...args, limit, offset).all<Capture>();
-  return json({ ok: true, captures: result.results || [] });
+  const captures = await withTags(result.results || [], env);
+  return json({ ok: true, captures });
+}
+
+async function listTags(env: Env) {
+  requireDb(env);
+  const rows = await env.DB!.prepare(
+    `SELECT name, SUM(count) AS count
+     FROM (
+       SELECT tags.name AS name, COUNT(capture_tags.capture_id) AS count
+       FROM tags
+       LEFT JOIN capture_tags ON capture_tags.tag_id=tags.id
+       GROUP BY tags.id, tags.name
+       UNION ALL
+       SELECT lower(category) AS name, COUNT(*) AS count
+       FROM captures
+       WHERE category IS NOT NULL AND trim(category) != ''
+       GROUP BY lower(category)
+     )
+     GROUP BY name
+     ORDER BY count DESC, name
+     LIMIT 100`
+  ).all<{ name: string; count: number }>();
+  return json({ ok: true, tags: rows.results || [] });
 }
 
 async function getCapture(id: string, env: Env) {
@@ -460,6 +491,25 @@ async function readActionItems(id: string, env: Env) {
   return rows.results || [];
 }
 
+async function withTags(captures: Capture[], env: Env) {
+  if (!captures.length) return captures;
+  const placeholders = captures.map(() => "?").join(",");
+  const rows = await env.DB!.prepare(
+    `SELECT capture_tags.capture_id, tags.name
+     FROM capture_tags
+     JOIN tags ON tags.id=capture_tags.tag_id
+     WHERE capture_tags.capture_id IN (${placeholders})
+     ORDER BY tags.name`
+  ).bind(...captures.map((capture) => capture.id)).all<{ capture_id: string; name: string }>();
+  const byCapture = new Map<string, string[]>();
+  for (const row of rows.results || []) {
+    const list = byCapture.get(row.capture_id) || [];
+    list.push(row.name);
+    byCapture.set(row.capture_id, list);
+  }
+  return captures.map((capture) => ({ ...capture, tags: byCapture.get(capture.id) || [] }));
+}
+
 async function replaceTags(captureId: string, tags: string[], env: Env) {
   const clean = [...new Set(tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean))];
   const now = new Date().toISOString();
@@ -469,6 +519,7 @@ async function replaceTags(captureId: string, tags: string[], env: Env) {
     await env.DB!.prepare("INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?, ?, ?)").bind(id, name, now).run();
     await env.DB!.prepare("INSERT OR IGNORE INTO capture_tags (capture_id, tag_id) VALUES (?, ?)").bind(captureId, id).run();
   }
+  return clean;
 }
 
 async function replaceActionItems(captureId: string, items: { text: string; due_date?: string | null; status?: string }[], env: Env) {
@@ -506,6 +557,15 @@ function sanitizeSource(value: unknown) {
 function sanitizeCategory(value: unknown) {
   const category = String(value || "").trim().toLowerCase();
   return category || null;
+}
+
+function sanitizeTag(value: unknown) {
+  const tag = String(value || "").trim().replace(/^#/, "").toLowerCase();
+  return tag || null;
+}
+
+function tagsFromText(text: string) {
+  return [...text.matchAll(/(^|\s)#([a-z0-9][a-z0-9_-]{0,48})/gi)].map((match) => match[2].toLowerCase());
 }
 
 function aiProvider(env: Env): AiProvider {
