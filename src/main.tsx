@@ -31,6 +31,7 @@ type CaptureResponse = { capture: Capture };
 type StatsResponse = { today: number; openTasks: number; unprocessed: number; ideasWeek: number };
 
 const typeOptions = ["note", "task", "idea", "reminder", "question", "project"];
+const categoryOptions = ["work"];
 const statusOptions = ["inbox", "active", "done", "dismissed", "archived"];
 const openStatusOptions = ["inbox", "active"];
 const filterOptions = [
@@ -96,7 +97,7 @@ function App() {
           <span className="brand-mark">B</span>
           <span>BrainDump</span>
         </button>
-        {["/feed", "/tasks", "/ideas", "/reminders", "/review", "/settings"].map((item) => (
+        {["/feed", "/work", "/tasks", "/ideas", "/reminders", "/review", "/settings"].map((item) => (
           <button key={item} className={route === item ? "active" : ""} onClick={() => nav(item)}>
             {item.slice(1)}
           </button>
@@ -106,6 +107,7 @@ function App() {
         {route === "/" && <Dashboard nav={nav} />}
         {route === "/capture" && <CapturePage />}
         {route === "/feed" && <Feed />}
+        {route === "/work" && <Feed fixedCategory="work" title="Work" />}
         {route === "/tasks" && <Feed fixedType="task" title="Tasks" includePendingActions />}
         {route === "/ideas" && <Feed fixedType="idea" title="Ideas" />}
         {route === "/reminders" && <Feed fixedType="reminder" title="Reminders" />}
@@ -246,6 +248,7 @@ function Feed({
   title = "Feed",
   processingStatus,
   includePendingActions,
+  fixedCategory,
   initialStatus = "",
   includeClosed = false
 }: {
@@ -253,6 +256,7 @@ function Feed({
   title?: string;
   processingStatus?: string;
   includePendingActions?: boolean;
+  fixedCategory?: string;
   initialStatus?: string;
   includeClosed?: boolean;
 }) {
@@ -268,10 +272,11 @@ function Feed({
     else if (!includeClosed) p.set("open_only", "1");
     if (source) p.set("source", source);
     if (type) p.set("type", type);
+    if (fixedCategory) p.set("category", fixedCategory);
     if (processingStatus) p.set("processing_status", processingStatus);
     if (includePendingActions) p.set("pending_actions", "1");
     return p.toString();
-  }, [q, status, source, type, processingStatus, includePendingActions, includeClosed]);
+  }, [q, status, source, type, fixedCategory, processingStatus, includePendingActions, includeClosed]);
   useEffect(() => { fetch(`/api/captures?${query}`).then((r) => r.json() as Promise<CaptureListResponse>).then((d) => setItems(d.captures || [])); }, [query]);
   return (
     <section className="main-column feed-page">
@@ -312,9 +317,11 @@ function CaptureList({ items }: { items: Capture[] }) {
 
 function CaptureRow({ item }: { item: Capture }) {
   const tags = item.tags?.length ? item.tags : [item.category].filter(Boolean) as string[];
+  const categoryClass = item.category ? ` category-${item.category.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}` : "";
   return (
-    <a className={`card row type-${item.type}`} href={`/capture/${item.id}`} onClick={(e) => { e.preventDefault(); history.pushState(null, "", `/capture/${item.id}`); dispatchEvent(new PopStateEvent("popstate")); }}>
+    <a className={`card row type-${item.type}${categoryClass}`} href={`/capture/${item.id}`} onClick={(e) => { e.preventDefault(); history.pushState(null, "", `/capture/${item.id}`); dispatchEvent(new PopStateEvent("popstate")); }}>
       <div className="row-top">
+        {item.category && <span className={`type-badge category ${item.category.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`}>#{item.category}</span>}
         <span className={`type-badge ${item.type}`}>#{item.type}</span>
         {item.status !== "inbox" && <span className={`status-badge ${item.status}`}>{item.status}</span>}
       </div>
@@ -420,7 +427,8 @@ function CaptureDetail({ id }: { id: string }) {
         <select value={capture.priority} onChange={(e) => setCapture({ ...capture, priority: e.target.value })}>{["low", "medium", "high"].map((p) => <option key={p}>{p}</option>)}</select>
         <input type="date" value={capture.due_date || ""} onChange={(e) => setCapture({ ...capture, due_date: e.target.value })} />
       </div>
-      <input placeholder="Category" value={capture.category || ""} onChange={(e) => setCapture({ ...capture, category: e.target.value })} />
+      <input list="category-options" placeholder="Category" value={capture.category || ""} onChange={(e) => setCapture({ ...capture, category: e.target.value })} />
+      <datalist id="category-options">{categoryOptions.map((c) => <option key={c} value={c} />)}</datalist>
       <input placeholder="Tags, comma separated" value={tags} onChange={(e) => setTags(e.target.value)} />
       <textarea placeholder="Action items, one per line" value={actions} onChange={(e) => setActions(e.target.value)} />
       <div className="capture-actions">

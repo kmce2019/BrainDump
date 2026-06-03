@@ -124,6 +124,7 @@ async function createCaptureRoute(request: Request, env: Env, ctx: ExecutionCont
     raw_text: body.raw_text,
     source: sanitizeSource(body.source),
     type: sanitizeType(body.type_hint),
+    category: sanitizeCategory(body.category),
     metadata: body.metadata || {}
   });
   queueProcessing(env, ctx, capture.id);
@@ -134,6 +135,7 @@ async function createCapture(env: Env, input: {
   raw_text: string;
   source: string;
   type: CaptureType;
+  category?: string | null;
   metadata?: unknown;
   external_user_id?: string;
   external_chat_id?: string;
@@ -148,6 +150,7 @@ async function createCapture(env: Env, input: {
     raw_text: raw,
     source: input.source,
     type: input.type,
+    category: input.category || null,
     priority: "medium",
     status: "inbox",
     processing_status: aiProvider(env) === "none" ? "unprocessed" : "queued",
@@ -159,9 +162,9 @@ async function createCapture(env: Env, input: {
     metadata_json: JSON.stringify(input.metadata || {})
   };
   await env.DB!.prepare(
-    `INSERT INTO captures (id, raw_text, source, type, priority, status, processing_status, created_at, updated_at, external_user_id, external_chat_id, external_message_id, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(capture.id, capture.raw_text, capture.source, capture.type, capture.priority, capture.status, capture.processing_status, capture.created_at, capture.updated_at, capture.external_user_id, capture.external_chat_id, capture.external_message_id, capture.metadata_json).run();
+    `INSERT INTO captures (id, raw_text, source, type, category, priority, status, processing_status, created_at, updated_at, external_user_id, external_chat_id, external_message_id, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(capture.id, capture.raw_text, capture.source, capture.type, capture.category, capture.priority, capture.status, capture.processing_status, capture.created_at, capture.updated_at, capture.external_user_id, capture.external_chat_id, capture.external_message_id, capture.metadata_json).run();
   return capture;
 }
 
@@ -180,6 +183,11 @@ async function listCaptures(url: URL, env: Env) {
   addFilter(where, args, "status", url.searchParams.get("status"), statuses);
   addFilter(where, args, "source", url.searchParams.get("source"));
   addFilter(where, args, "processing_status", url.searchParams.get("processing_status"), processingStatuses);
+  const category = sanitizeCategory(url.searchParams.get("category"));
+  if (category) {
+    where.push("lower(category)=lower(?)");
+    args.push(category);
+  }
   if (!url.searchParams.get("status") && url.searchParams.get("open_only") === "1") {
     where.push("status IN ('inbox', 'active')");
   }
@@ -285,10 +293,14 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
     return json({ ok: true });
   }
   if (text === "/help") {
-    ctx.waitUntil(sendTelegramMessage(env, chatId, "Send any message to capture it.\n/task buy printer paper\n/idea local property photo service\n/remind call vendor Monday\n/today\n/search freepbx"));
+    ctx.waitUntil(sendTelegramMessage(env, chatId, "Send any message to capture it.\n/work order lift\n/task buy printer paper\n/idea local property photo service\n/remind call vendor Monday\n/today\n/search freepbx"));
     return json({ ok: true });
   }
   if (text === "/today") return telegramToday(env, ctx, chatId);
+  if (text === "/search") {
+    ctx.waitUntil(sendTelegramMessage(env, chatId, "Use /search <query>."));
+    return json({ ok: true });
+  }
   if (text.startsWith("/search ")) return telegramSearch(env, ctx, chatId, text.slice(8).trim());
   if (!text) return json({ ok: true });
 
@@ -297,6 +309,7 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
     raw_text: parsed.raw_text,
     source: "telegram",
     type: parsed.type,
+    category: parsed.category,
     external_user_id: userId,
     external_chat_id: chatId,
     external_message_id: String(message.message_id || ""),
@@ -333,10 +346,12 @@ async function telegramSearch(env: Env, ctx: ExecutionContext, chatId: string, q
   return json({ ok: true });
 }
 
-function parseTelegramText(text: string): { type: CaptureType; raw_text: string } {
+function parseTelegramText(text: string): { type: CaptureType; category?: string | null; raw_text: string } {
   const commands: Record<string, CaptureType> = { "/task": "task", "/idea": "idea", "/remind": "reminder", "/project": "project", "/question": "question", "/note": "note" };
   const [cmd, ...rest] = text.split(/\s+/);
-  if (commands[cmd]) return { type: commands[cmd], raw_text: rest.join(" ").trim() || text };
+  const normalizedCmd = cmd.toLowerCase().split("@")[0];
+  if (commands[normalizedCmd]) return { type: commands[normalizedCmd], raw_text: rest.join(" ").trim() || text };
+  if (normalizedCmd === "/work") return { type: "task", category: "work", raw_text: rest.join(" ").trim() || text };
   return { type: "note", raw_text: text };
 }
 
@@ -477,6 +492,11 @@ function sanitizeType(value: unknown): CaptureType {
 function sanitizeSource(value: unknown) {
   const source = String(value || "api");
   return sources.has(source) ? source : "api";
+}
+
+function sanitizeCategory(value: unknown) {
+  const category = String(value || "").trim().toLowerCase();
+  return category || null;
 }
 
 function aiProvider(env: Env): AiProvider {
