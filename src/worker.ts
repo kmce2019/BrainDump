@@ -326,7 +326,7 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
     return json({ ok: true });
   }
   if (command.name === "/help") {
-    ctx.waitUntil(sendTelegramMessage(env, chatId, "Send any message to capture it.\n/work order lift\n/task buy printer paper\n/idea local property photo service\n/remind call vendor Monday\n/today\n/search freepbx"));
+    ctx.waitUntil(sendTelegramMessage(env, chatId, "Send any message to capture it as a note. Add hashtags to file it in multiple places.\n\n/work order lift #warehouse\n/task buy printer paper #work #office\n/idea local property photo service #business\n/remind call vendor Monday #work\n/today\n/search freepbx"));
     return json({ ok: true });
   }
   if (command.name === "/today") return telegramToday(env, ctx, chatId);

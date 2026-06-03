@@ -16,6 +16,105 @@ Default `AI_PROVIDER` is `none`.
 
 Current Worker URL: `https://braindump.boxospam.workers.dev`.
 
+## How to Use BrainDump
+
+BrainDump is built around fast capture. Send the thought first, then use commands and hashtags only when you already know where something belongs.
+
+### From Telegram
+
+Open Telegram, message your BrainDump bot, and send a normal message:
+
+```text
+order lift
+```
+
+That saves as a `note` by default. BrainDump does not currently guess that this belongs to work unless AI processing is enabled and configured later. For predictable filing, use a command or hashtags.
+
+Use a command at the start of the message to set the capture type:
+
+```text
+/task order lift
+/idea local property photo service
+/remind call vendor Monday
+/project warehouse move plan
+/question what did we decide about labels?
+/note check quote details
+```
+
+Use `/work` when the item belongs in the work grouping:
+
+```text
+/work order lift
+```
+
+`/work` saves the capture as a `task` and sets the category to `work`.
+
+Use hashtags to file one message in one or more tag groups:
+
+```text
+/task order lift #work #warehouse #equipment
+```
+
+This saves one task, then files it under `#work`, `#warehouse`, and `#equipment`. Multiple hashtags are supported. Hashtags are explicit; BrainDump will not add `#work` just because the message says "work" unless you type `#work` or use `/work`.
+
+Use `/search` to search from Telegram:
+
+```text
+/search lift
+```
+
+`/search` is a command, not a saved note. It replies with matching captures and does not create a new capture.
+
+### Quick Examples
+
+```text
+random thought
+```
+
+Saved as a `note`.
+
+```text
+/task call classic collision #work #phone
+```
+
+Saved as a `task` and filed under `#work` and `#phone`.
+
+```text
+/work order lift #warehouse
+```
+
+Saved as a work `task` and filed under `#work` and `#warehouse`.
+
+```text
+/search classic collision
+```
+
+Searches your captures from Telegram.
+
+### Web App
+
+Use the web app when you want to scan, search, and clean up captures:
+
+- The dashboard shows the latest captures first.
+- The search box searches capture text, titles, summaries, and categories.
+- The tag rail filters captures by hashtag or category.
+- The work page shows work captures.
+- GISD Chat at `https://chat.gisd.tech` is linked from BrainDump for expanding or reasoning over a captured thought.
+
+### Screenshots
+
+Dashboard:
+
+![BrainDump dashboard](docs/screenshots/dashboard.png)
+
+Feed:
+
+![BrainDump feed](docs/screenshots/feed.png)
+
+GISD Chat link:
+
+![BrainDump chat link](docs/screenshots/chat.png)
+
 ## Setup
 
 Install dependencies:
@@ -132,9 +231,10 @@ Supported Telegram commands:
 /help
 /today
 /search freepbx
+/work order lift #warehouse
 /task buy printer paper
-/idea local property photo service
-/remind call vendor Monday
+/idea local property photo service #business
+/remind call vendor Monday #work
 /project warehouse move plan
 /question what did we decide about labels?
 /note check quote details
