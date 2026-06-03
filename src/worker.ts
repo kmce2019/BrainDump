@@ -183,6 +183,7 @@ async function listCaptures(url: URL, env: Env) {
   addFilter(where, args, "status", url.searchParams.get("status"), statuses);
   addFilter(where, args, "source", url.searchParams.get("source"));
   addFilter(where, args, "processing_status", url.searchParams.get("processing_status"), processingStatuses);
+  where.push("NOT (source='telegram' AND lower(trim(raw_text)) IN ('/search', '/help', '/start', '/today'))");
   const category = sanitizeCategory(url.searchParams.get("category"));
   if (category) {
     where.push("lower(category)=lower(?)");
@@ -280,6 +281,7 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
   const chatId = String(message.chat.id);
   const userId = String(message.from.id);
   const text = String(message.text || "").trim();
+  const command = telegramCommand(text);
   const allowed = !env.ALLOWED_TELEGRAM_USER_ID || env.ALLOWED_TELEGRAM_USER_ID === userId;
 
   if (!allowed) {
@@ -287,21 +289,21 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
     return json({ ok: true });
   }
 
-  if (text === "/start") {
+  if (command.name === "/start") {
     const extra = env.ALLOWED_TELEGRAM_USER_ID === userId ? "\n\nYou are authorized. Send me anything and I will capture it." : "";
     ctx.waitUntil(sendTelegramMessage(env, chatId, `BrainDump is connected. Your Telegram user ID is ${userId}. Add this as ALLOWED_TELEGRAM_USER_ID in Cloudflare if you have not already.${extra}`));
     return json({ ok: true });
   }
-  if (text === "/help") {
+  if (command.name === "/help") {
     ctx.waitUntil(sendTelegramMessage(env, chatId, "Send any message to capture it.\n/work order lift\n/task buy printer paper\n/idea local property photo service\n/remind call vendor Monday\n/today\n/search freepbx"));
     return json({ ok: true });
   }
-  if (text === "/today") return telegramToday(env, ctx, chatId);
-  if (text === "/search") {
+  if (command.name === "/today") return telegramToday(env, ctx, chatId);
+  if (command.name === "/search" && !command.args) {
     ctx.waitUntil(sendTelegramMessage(env, chatId, "Use /search <query>."));
     return json({ ok: true });
   }
-  if (text.startsWith("/search ")) return telegramSearch(env, ctx, chatId, text.slice(8).trim());
+  if (command.name === "/search") return telegramSearch(env, ctx, chatId, command.args);
   if (!text) return json({ ok: true });
 
   const parsed = parseTelegramText(text);
@@ -348,11 +350,18 @@ async function telegramSearch(env: Env, ctx: ExecutionContext, chatId: string, q
 
 function parseTelegramText(text: string): { type: CaptureType; category?: string | null; raw_text: string } {
   const commands: Record<string, CaptureType> = { "/task": "task", "/idea": "idea", "/remind": "reminder", "/project": "project", "/question": "question", "/note": "note" };
-  const [cmd, ...rest] = text.split(/\s+/);
-  const normalizedCmd = cmd.toLowerCase().split("@")[0];
-  if (commands[normalizedCmd]) return { type: commands[normalizedCmd], raw_text: rest.join(" ").trim() || text };
-  if (normalizedCmd === "/work") return { type: "task", category: "work", raw_text: rest.join(" ").trim() || text };
+  const command = telegramCommand(text);
+  if (commands[command.name]) return { type: commands[command.name], raw_text: command.args || text };
+  if (command.name === "/work") return { type: "task", category: "work", raw_text: command.args || text };
   return { type: "note", raw_text: text };
+}
+
+function telegramCommand(text: string) {
+  const [cmd = "", ...rest] = text.trim().split(/\s+/);
+  return {
+    name: cmd.toLowerCase().split("@")[0],
+    args: rest.join(" ").trim()
+  };
 }
 
 async function sendTelegramMessage(env: Env, chatId: string, text: string) {
