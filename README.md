@@ -60,6 +60,12 @@ Create calendar candidates from Telegram:
 
 Calendar commands save the original Telegram message as a capture first. BrainDump then parses the date in `America/Chicago`, creates a pending calendar candidate, and provides an `.ics` download. Google Calendar OAuth is not required.
 
+Optional Google Calendar creation uses:
+
+- Redirect URI: `https://braindump.boxospam.workers.dev/api/auth/google/callback`
+- Scope: `https://www.googleapis.com/auth/calendar.events`
+- Worker secrets: `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+
 Use hashtags to file one message in one or more tag groups:
 
 ```text

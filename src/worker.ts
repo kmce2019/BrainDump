@@ -20,6 +20,8 @@ type Env = {
   OLLAMA_MODEL?: string;
   WORKERS_AI_MODEL?: string;
   USER_TIMEZONE?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
 };
 
 type Capture = {
@@ -71,6 +73,7 @@ const processingStatuses = new Set(["unprocessed", "queued", "processing", "proc
 const sources = new Set(["web", "api", "shortcut", "telegram", "email", "sms"]);
 const calendarStatuses = new Set<CalendarStatus>(["pending", "exported", "created", "canceled", "failed"]);
 let calendarSchemaPromise: Promise<void> | null = null;
+let calendarOauthSchemaPromise: Promise<void> | null = null;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -80,6 +83,7 @@ export default {
       if (url.pathname === "/api/login" && request.method === "POST") return login(request, env);
       if (url.pathname === "/api/logout" && request.method === "POST") return logout();
       if (url.pathname === "/api/session") return (await isWebAuthed(request, env)) ? json({ ok: true }) : json({ ok: false }, 401);
+      if (url.pathname === "/api/auth/google/callback" && request.method === "GET") return googleOauthCallback(request, env);
       if (url.pathname === "/telegram/webhook" && request.method === "POST") return telegramWebhook(request, env, ctx);
 
       if (url.pathname.startsWith("/api/")) {
@@ -89,12 +93,16 @@ export default {
         if (url.pathname === "/api/captures" && request.method === "POST") return createCaptureRoute(request, env, ctx);
         if (url.pathname === "/api/captures" && request.method === "GET") return listCaptures(url, env);
         if (url.pathname === "/api/calendar" && request.method === "GET") return listCalendarEntries(url, env);
+        if (url.pathname === "/api/calendar/google/status" && request.method === "GET") return googleCalendarStatus(env);
+        if (url.pathname === "/api/calendar/google/connect" && request.method === "GET") return googleOauthConnect(env);
+        if (url.pathname === "/api/calendar/google/disconnect" && request.method === "POST") return googleOauthDisconnect(env);
 
         const fromCaptureMatch = url.pathname.match(/^\/api\/calendar\/from-capture\/([^/]+)$/);
         if (fromCaptureMatch && request.method === "POST") return createCalendarFromCapture(fromCaptureMatch[1], env);
 
-        const calendarMatch = url.pathname.match(/^\/api\/calendar\/([^/]+)(?:\/(ics))?$/);
+        const calendarMatch = url.pathname.match(/^\/api\/calendar\/([^/]+)(?:\/(ics|google))?$/);
         if (calendarMatch && request.method === "GET" && calendarMatch[2] === "ics") return calendarIcs(calendarMatch[1], env);
+        if (calendarMatch && request.method === "POST" && calendarMatch[2] === "google") return createGoogleCalendarEvent(calendarMatch[1], env);
         if (calendarMatch && request.method === "GET" && !calendarMatch[2]) return getCalendarEntry(calendarMatch[1], env);
         if (calendarMatch && request.method === "PATCH" && !calendarMatch[2]) return updateCalendarEntry(calendarMatch[1], request, env);
         if (calendarMatch && request.method === "DELETE" && !calendarMatch[2]) return cancelCalendarEntry(calendarMatch[1], env);
@@ -535,6 +543,238 @@ async function calendarIcs(id: string, env: Env) {
       "Content-Disposition": 'attachment; filename="braindump-event.ics"'
     }
   });
+}
+
+async function googleCalendarStatus(env: Env) {
+  const credentials = await readGoogleCredentials(env);
+  return json({
+    ok: true,
+    configured: Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
+    connected: Boolean(credentials?.refresh_token || credentials?.access_token),
+    scope: credentials?.scope || null
+  });
+}
+
+async function googleOauthConnect(env: Env) {
+  requireGoogleConfig(env);
+  const state = crypto.randomUUID();
+  const signature = await signOauthState(state, env);
+  const params = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID!,
+    redirect_uri: googleRedirectUri(env),
+    response_type: "code",
+    scope: "https://www.googleapis.com/auth/calendar.events",
+    access_type: "offline",
+    include_granted_scopes: "true",
+    prompt: "consent",
+    state
+  });
+  return redirectWithCookie(`https://accounts.google.com/o/oauth2/v2/auth?${params}`, oauthStateCookie(`${state}.${signature}`, 600));
+}
+
+async function googleOauthCallback(request: Request, env: Env) {
+  if (!(await isWebAuthed(request, env))) return new Response("Unauthorized", { status: 401 });
+  requireGoogleConfig(env);
+  const url = new URL(request.url);
+  const error = url.searchParams.get("error");
+  if (error) return redirectWithCookie(`/calendar?google=error&reason=${encodeURIComponent(error)}`, oauthStateCookie("", 0));
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const cookieState = cookieValue(request, "bd_google_oauth");
+  if (!code || !state || !cookieState || !(await validOauthState(state, cookieState, env))) {
+    return new Response("Invalid or expired OAuth state", { status: 400 });
+  }
+  const token = await googleTokenRequest({
+    client_id: env.GOOGLE_CLIENT_ID!,
+    client_secret: env.GOOGLE_CLIENT_SECRET!,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: googleRedirectUri(env)
+  });
+  await saveGoogleCredentials(token, env);
+  return redirectWithCookie("/calendar?google=connected", oauthStateCookie("", 0));
+}
+
+async function googleOauthDisconnect(env: Env) {
+  const credentials = await readGoogleCredentials(env);
+  const token = credentials?.refresh_token || credentials?.access_token;
+  if (token) {
+    await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" }
+    }).catch(() => undefined);
+  }
+  await ensureCalendarOauthSchema(env);
+  await env.DB!.prepare("DELETE FROM calendar_oauth WHERE provider='google'").run();
+  return json({ ok: true, connected: false });
+}
+
+async function createGoogleCalendarEvent(id: string, env: Env) {
+  const entry = await readCalendarEntry(id, env);
+  if (!entry) return json({ ok: false, error: "Not found" }, 404);
+  if (entry.status === "canceled") throw new HttpError("Canceled entries cannot be created", 409);
+  if (entry.external_event_id) throw new HttpError("This entry already has a Google Calendar event", 409);
+  const accessToken = await googleAccessToken(env);
+  const response = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(googleEventPayload(entry))
+  });
+  const result = await response.json<Record<string, any>>();
+  if (!response.ok) {
+    await env.DB!.prepare("UPDATE calendar_entries SET status='failed', metadata_json=?, updated_at=? WHERE id=?")
+      .bind(JSON.stringify({ google_error: result }), new Date().toISOString(), id).run();
+    throw new HttpError(result.error?.message || "Google Calendar event creation failed", response.status);
+  }
+  await env.DB!.prepare(
+    `UPDATE calendar_entries
+     SET status='created', external_calendar_id='primary', external_event_id=?, metadata_json=?, updated_at=?
+     WHERE id=?`
+  ).bind(result.id || null, JSON.stringify({ google_html_link: result.htmlLink || null }), new Date().toISOString(), id).run();
+  return json({ ok: true, calendar_entry: await readCalendarEntry(id, env), google_event: { id: result.id, html_link: result.htmlLink || null } });
+}
+
+function googleEventPayload(entry: CalendarEntry) {
+  const event: Record<string, unknown> = {
+    summary: entry.title,
+    description: entry.description || "",
+    location: entry.location || undefined
+  };
+  if (entry.all_day) {
+    event.start = { date: entry.start_time.slice(0, 10) };
+    event.end = { date: (entry.end_time || entry.start_time).slice(0, 10) };
+  } else {
+    event.start = { dateTime: entry.start_time, timeZone: entry.timezone || "America/Chicago" };
+    event.end = { dateTime: entry.end_time || new Date(new Date(entry.start_time).getTime() + 30 * 60000).toISOString(), timeZone: entry.timezone || "America/Chicago" };
+  }
+  return event;
+}
+
+async function googleAccessToken(env: Env) {
+  requireGoogleConfig(env);
+  const credentials = await readGoogleCredentials(env);
+  if (!credentials) throw new HttpError("Google Calendar is not connected", 409);
+  const expiresAt = credentials.expires_at ? new Date(credentials.expires_at).getTime() : 0;
+  if (credentials.access_token && expiresAt > Date.now() + 60000) return credentials.access_token;
+  if (!credentials.refresh_token) throw new HttpError("Google Calendar must be reconnected", 409);
+  const token = await googleTokenRequest({
+    client_id: env.GOOGLE_CLIENT_ID!,
+    client_secret: env.GOOGLE_CLIENT_SECRET!,
+    refresh_token: credentials.refresh_token,
+    grant_type: "refresh_token"
+  });
+  await saveGoogleCredentials({ ...token, refresh_token: credentials.refresh_token }, env);
+  return String(token.access_token);
+}
+
+async function googleTokenRequest(values: Record<string, string>) {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(values)
+  });
+  const token = await response.json<Record<string, any>>();
+  if (!response.ok || !token.access_token) throw new HttpError(token.error_description || token.error || "Google token exchange failed", 400);
+  return token;
+}
+
+async function saveGoogleCredentials(token: Record<string, any>, env: Env) {
+  await ensureCalendarOauthSchema(env);
+  const current = await readGoogleCredentials(env);
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + Number(token.expires_in || 3600) * 1000).toISOString();
+  await env.DB!.prepare(
+    `INSERT INTO calendar_oauth (provider, access_token, refresh_token, token_type, scope, expires_at, created_at, updated_at)
+     VALUES ('google', ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(provider) DO UPDATE SET
+       access_token=excluded.access_token,
+       refresh_token=excluded.refresh_token,
+       token_type=excluded.token_type,
+       scope=excluded.scope,
+       expires_at=excluded.expires_at,
+       updated_at=excluded.updated_at`
+  ).bind(
+    token.access_token || current?.access_token || null,
+    token.refresh_token || current?.refresh_token || null,
+    token.token_type || current?.token_type || "Bearer",
+    token.scope || current?.scope || "https://www.googleapis.com/auth/calendar.events",
+    expiresAt,
+    current?.created_at || now,
+    now
+  ).run();
+}
+
+async function readGoogleCredentials(env: Env) {
+  await ensureCalendarOauthSchema(env);
+  return env.DB!.prepare("SELECT * FROM calendar_oauth WHERE provider='google'").first<{
+    access_token?: string | null;
+    refresh_token?: string | null;
+    token_type?: string | null;
+    scope?: string | null;
+    expires_at?: string | null;
+    created_at: string;
+  }>();
+}
+
+async function ensureCalendarOauthSchema(env: Env) {
+  requireDb(env);
+  if (!calendarOauthSchemaPromise) {
+    calendarOauthSchemaPromise = env.DB!.prepare(
+      `CREATE TABLE IF NOT EXISTS calendar_oauth (
+        provider TEXT PRIMARY KEY,
+        access_token TEXT,
+        refresh_token TEXT,
+        token_type TEXT,
+        scope TEXT,
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`
+    ).run().then(() => undefined).catch((error) => {
+      calendarOauthSchemaPromise = null;
+      throw error;
+    });
+  }
+  await calendarOauthSchemaPromise;
+}
+
+function requireGoogleConfig(env: Env) {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw new HttpError("Google OAuth is not configured", 503);
+}
+
+function googleRedirectUri(env: Env) {
+  return `${(env.APP_BASE_URL || "https://braindump.boxospam.workers.dev").replace(/\/$/, "")}/api/auth/google/callback`;
+}
+
+async function signOauthState(state: string, env: Env) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.APP_PASSWORD || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(state));
+  return base64Url(new Uint8Array(signature));
+}
+
+async function validOauthState(state: string, cookieState: string, env: Env) {
+  const [cookieValue, signature] = cookieState.split(".");
+  return cookieValue === state && signature === await signOauthState(state, env);
+}
+
+function base64Url(value: Uint8Array) {
+  return btoa(String.fromCharCode(...value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function cookieValue(request: Request, name: string) {
+  const cookie = request.headers.get("Cookie") || "";
+  return cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || "";
+}
+
+function oauthStateCookie(value: string, maxAge: number) {
+  return `bd_google_oauth=${value}; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/google/callback; Max-Age=${maxAge}`;
+}
+
+function redirectWithCookie(location: string, cookie: string) {
+  return new Response(null, { status: 302, headers: { Location: location, "Set-Cookie": cookie } });
 }
 
 async function readCalendarEntry(id: string, env: Env) {

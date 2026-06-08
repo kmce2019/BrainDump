@@ -32,6 +32,7 @@ type CalendarEntry = {
   all_day: number;
   status: "pending" | "exported" | "created" | "canceled" | "failed";
   source: string;
+  external_event_id?: string | null;
   capture_preview?: string | null;
 };
 
@@ -49,6 +50,7 @@ type TagSummary = { name: string; count: number };
 type TagsResponse = { tags?: TagSummary[] };
 type CalendarListResponse = { calendar_entries?: CalendarEntry[] };
 type CalendarResponse = { calendar_entry: CalendarEntry };
+type GoogleCalendarStatus = { configured: boolean; connected: boolean; scope?: string | null };
 
 const typeOptions = ["note", "task", "idea", "reminder", "question", "project"];
 const categoryOptions = ["work"];
@@ -452,14 +454,32 @@ function ChatBridge() {
 
 function CalendarPage() {
   const [items, setItems] = useState<CalendarEntry[]>([]);
+  const [google, setGoogle] = useState<GoogleCalendarStatus>({ configured: false, connected: false });
   const [rawText, setRawText] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   async function load() {
-    const data = await fetch("/api/calendar").then((r) => r.json() as Promise<CalendarListResponse>);
+    const [calendarRes, googleRes] = await Promise.all([fetch("/api/calendar"), fetch("/api/calendar/google/status")]);
+    const data = await calendarRes.json() as CalendarListResponse;
     setItems(data.calendar_entries || []);
+    if (googleRes.ok) setGoogle(await googleRes.json() as GoogleCalendarStatus);
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const result = new URLSearchParams(window.location.search).get("google");
+    if (result === "connected") {
+      setMessage("Google Calendar connected.");
+      history.replaceState(null, "", "/calendar");
+    } else if (result === "error") {
+      setMessage("Google Calendar authorization was not completed.");
+      history.replaceState(null, "", "/calendar");
+    }
+  }, []);
+  async function disconnectGoogle() {
+    await fetch("/api/calendar/google/disconnect", { method: "POST" });
+    setMessage("Google Calendar disconnected.");
+    load();
+  }
   async function create(e: FormEvent) {
     e.preventDefault();
     if (!rawText.trim()) return;
@@ -492,30 +512,42 @@ function CalendarPage() {
   return (
     <section className="main-column calendar-page">
       <header className="topline"><div><p className="eyebrow">Calendar candidates</p><h1>Calendar</h1></div></header>
+      <section className="card google-calendar-status">
+        <div>
+          <p className="eyebrow">Google Calendar</p>
+          <h2>{google.connected ? "Connected" : google.configured ? "Ready to connect" : "Not configured"}</h2>
+          <p>{google.connected ? "Candidates can be created directly in your primary Google Calendar." : "Connect once to enable direct event creation. ICS export remains available."}</p>
+        </div>
+        {google.connected
+          ? <button className="muted" onClick={disconnectGoogle}>Disconnect</button>
+          : <a className={`link-button${google.configured ? "" : " disabled"}`} href={google.configured ? "/api/calendar/google/connect" : undefined}>Connect Google Calendar</a>}
+      </section>
       <form className="card calendar-capture" onSubmit={create}>
         <label htmlFor="calendar-capture">Create from a capture</label>
         <textarea id="calendar-capture" placeholder="tomorrow 9am call website vendor" value={rawText} onChange={(e) => setRawText(e.target.value)} />
         <div className="capture-actions"><button disabled={saving || !rawText.trim()}>{saving ? "Saving..." : "Create candidate"}</button></div>
         {message && <p className={message.startsWith("Calendar") ? "toast" : "helper-text"}>{message}</p>}
       </form>
-      <CalendarGroup title="Pending" items={pending} onChanged={load} empty="No pending calendar candidates." />
-      <CalendarGroup title="Exported / created" items={completed} onChanged={load} empty="No exported entries yet." />
-      <CalendarGroup title="Failed / canceled" items={failed} onChanged={load} empty="No failed entries." />
+      <CalendarGroup title="Pending" items={pending} googleConnected={google.connected} onChanged={load} empty="No pending calendar candidates." />
+      <CalendarGroup title="Exported / created" items={completed} googleConnected={google.connected} onChanged={load} empty="No exported entries yet." />
+      <CalendarGroup title="Failed / canceled" items={failed} googleConnected={google.connected} onChanged={load} empty="No failed entries." />
     </section>
   );
 }
 
-function CalendarGroup({ title, items, onChanged, empty }: { title: string; items: CalendarEntry[]; onChanged: () => void; empty: string }) {
+function CalendarGroup({ title, items, googleConnected, onChanged, empty }: { title: string; items: CalendarEntry[]; googleConnected: boolean; onChanged: () => void; empty: string }) {
   return (
     <section className="calendar-group">
       <h2>{title}</h2>
-      {items.length ? <div className="calendar-list">{items.map((item) => <CalendarCard key={item.id} item={item} onChanged={onChanged} />)}</div> : <div className="empty">{empty}</div>}
+      {items.length ? <div className="calendar-list">{items.map((item) => <CalendarCard key={item.id} item={item} googleConnected={googleConnected} onChanged={onChanged} />)}</div> : <div className="empty">{empty}</div>}
     </section>
   );
 }
 
-function CalendarCard({ item, onChanged }: { item: CalendarEntry; onChanged: () => void }) {
+function CalendarCard({ item, googleConnected = false, onChanged }: { item: CalendarEntry; googleConnected?: boolean; onChanged: () => void }) {
   const display = calendarDisplay(item);
+  const [creatingGoogle, setCreatingGoogle] = useState(false);
+  const [googleError, setGoogleError] = useState("");
   async function markExported() {
     await fetch(`/api/calendar/${item.id}`, {
       method: "PATCH",
@@ -528,6 +560,17 @@ function CalendarCard({ item, onChanged }: { item: CalendarEntry; onChanged: () 
     await fetch(`/api/calendar/${item.id}`, { method: "DELETE" });
     onChanged();
   }
+  async function createInGoogle() {
+    setCreatingGoogle(true);
+    setGoogleError("");
+    const response = await fetch(`/api/calendar/${item.id}/google`, { method: "POST" });
+    if (response.ok) onChanged();
+    else {
+      const data = await response.json().catch(() => ({ error: "Google Calendar creation failed" })) as { error?: string };
+      setGoogleError(data.error || "Google Calendar creation failed");
+    }
+    setCreatingGoogle(false);
+  }
   return (
     <article id={item.id} className="card calendar-card">
       <div className="row-top">
@@ -539,10 +582,13 @@ function CalendarCard({ item, onChanged }: { item: CalendarEntry; onChanged: () 
       {item.location && <p>{item.location}</p>}
       {item.capture_preview && <p className="calendar-preview">{item.capture_preview}</p>}
       <div className="calendar-actions">
+        {googleConnected && item.status !== "created" && item.status !== "canceled" && <button disabled={creatingGoogle} onClick={createInGoogle}>{creatingGoogle ? "Creating..." : "Create in Google"}</button>}
+        {item.external_event_id && <span className="google-created">Google event created</span>}
         <a className="link-button" href={`/api/calendar/${item.id}/ics`}>Download .ics</a>
         {item.status === "pending" && <button onClick={markExported}>Mark done / exported</button>}
         {item.status !== "canceled" && <button className="muted" onClick={cancel}>Cancel</button>}
       </div>
+      {googleError && <p className="error">{googleError}</p>}
     </article>
   );
 }

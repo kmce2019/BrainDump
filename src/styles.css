@@ -478,6 +478,19 @@ h1 { letter-spacing: 0; }
   font-weight: 800;
 }
 .calendar-capture textarea { min-height: 6rem; }
+.google-calendar-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.google-calendar-status h2 { margin-bottom: 0.4rem; }
+.google-calendar-status p { margin-bottom: 0; color: var(--text-muted); }
+.google-calendar-status .link-button { margin-top: 0; flex: 0 0 auto; }
+.link-button.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
 .calendar-group {
   display: grid;
   gap: 0.75rem;
@@ -520,6 +533,11 @@ h1 { letter-spacing: 0; }
 .calendar-actions button, .calendar-actions .link-button {
   min-height: 2.7rem;
   justify-content: center;
+}
+.google-created {
+  color: var(--success);
+  font-size: 0.85rem;
+  font-weight: 800;
 }
 .status-badge.calendar-pending { color: var(--warning); }
 .status-badge.calendar-exported, .status-badge.calendar-created { color: var(--success); }
@@ -635,6 +653,7 @@ h1 { letter-spacing: 0; }
   .capture-actions select { max-width: none; }
   .mini-stats, .stats, .filters, .grid { grid-template-columns: 1fr; }
   .calendar-list { grid-template-columns: 1fr; }
+  .google-calendar-status { align-items: stretch; flex-direction: column; }
   .calendar-actions > * { flex: 1 1 100%; }
   .card { border-radius: 20px; }
   .meta { font-size: 0.95rem; }
