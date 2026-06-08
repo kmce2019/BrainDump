@@ -791,7 +791,36 @@ function oauthStateCookie(value: string, maxAge: number) {
 }
 
 function redirectWithCookie(location: string, cookie: string) {
-  return new Response(null, { status: 302, headers: { Location: location, "Set-Cookie": cookie } });
+  const safeLocation = escapeHtml(location);
+  const scriptLocation = JSON.stringify(location).replace(/</g, "\\u003c");
+  return new Response(
+    `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0;url=${safeLocation}">
+  <title>Continue to Google Calendar</title>
+</head>
+<body style="font-family:system-ui,sans-serif;background:#000;color:#fff;padding:2rem">
+  <p>Continuing to Google Calendar...</p>
+  <p><a style="color:#fff" href="${safeLocation}">Continue</a></p>
+  <script>window.location.replace(${scriptLocation});</script>
+</body>
+</html>`,
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Set-Cookie": cookie
+      }
+    }
+  );
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 async function readCalendarEntry(id: string, env: Env) {
