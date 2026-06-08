@@ -472,6 +472,77 @@ h1 { letter-spacing: 0; }
   grid-template-columns: repeat(4, 1fr);
   gap: 0.75rem;
 }
+.calendar-capture label {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-weight: 800;
+}
+.calendar-capture textarea { min-height: 6rem; }
+.calendar-group {
+  display: grid;
+  gap: 0.75rem;
+}
+.calendar-group > h2 { margin: 0; }
+.calendar-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+.calendar-card {
+  display: flex;
+  flex-direction: column;
+}
+.calendar-title h3 {
+  margin: 0.8rem 0 0.45rem;
+  font-size: 1.15rem;
+}
+.calendar-title:hover { text-decoration: underline; }
+.calendar-when {
+  color: var(--text);
+  line-height: 1.5;
+}
+.calendar-preview {
+  color: var(--text-muted);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.calendar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: auto;
+}
+.calendar-actions .link-button { margin-top: 0; }
+.calendar-actions button, .calendar-actions .link-button {
+  min-height: 2.7rem;
+  justify-content: center;
+}
+.status-badge.calendar-pending { color: var(--warning); }
+.status-badge.calendar-exported, .status-badge.calendar-created { color: var(--success); }
+.status-badge.calendar-failed { color: var(--danger); }
+.status-badge.calendar-canceled { color: var(--text-muted); }
+.calendar-edit-grid { align-items: center; }
+.check-field {
+  min-height: 3.25rem;
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem;
+}
+.check-field input { width: auto; }
+.linked-calendar {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
 .empty {
   padding: 2.2rem 1rem;
   border: 1px dashed var(--border);
@@ -563,6 +634,8 @@ h1 { letter-spacing: 0; }
   }
   .capture-actions select { max-width: none; }
   .mini-stats, .stats, .filters, .grid { grid-template-columns: 1fr; }
+  .calendar-list { grid-template-columns: 1fr; }
+  .calendar-actions > * { flex: 1 1 100%; }
   .card { border-radius: 20px; }
   .meta { font-size: 0.95rem; }
   .settings-grid { grid-template-columns: 1fr; }

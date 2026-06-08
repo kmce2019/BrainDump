@@ -1,5 +1,8 @@
+import { formatCalendarDateTime, generateIcs, parseCalendarText } from "./calendar";
+
 type AiProvider = "none" | "ollama" | "workers_ai";
 type CaptureType = "note" | "task" | "idea" | "reminder" | "question" | "project";
+type CalendarStatus = "pending" | "exported" | "created" | "canceled" | "failed";
 
 type Env = {
   DB?: D1Database;
@@ -41,10 +44,32 @@ type Capture = {
   tags?: string[];
 };
 
+type CalendarEntry = {
+  id: string;
+  capture_id?: string | null;
+  title: string;
+  description?: string | null;
+  location?: string | null;
+  start_time: string;
+  end_time?: string | null;
+  timezone: string;
+  all_day: number;
+  status: CalendarStatus;
+  source: string;
+  external_calendar_id?: string | null;
+  external_event_id?: string | null;
+  ics_uid: string;
+  created_at: string;
+  updated_at: string;
+  metadata_json?: string | null;
+  capture_preview?: string | null;
+};
+
 const captureTypes = new Set(["note", "task", "idea", "reminder", "question", "project"]);
 const statuses = new Set(["inbox", "active", "done", "dismissed", "archived"]);
 const processingStatuses = new Set(["unprocessed", "queued", "processing", "processed", "failed"]);
 const sources = new Set(["web", "api", "shortcut", "telegram", "email", "sms"]);
+const calendarStatuses = new Set<CalendarStatus>(["pending", "exported", "created", "canceled", "failed"]);
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -62,6 +87,16 @@ export default {
         if (url.pathname === "/api/tags" && request.method === "GET") return listTags(env);
         if (url.pathname === "/api/captures" && request.method === "POST") return createCaptureRoute(request, env, ctx);
         if (url.pathname === "/api/captures" && request.method === "GET") return listCaptures(url, env);
+        if (url.pathname === "/api/calendar" && request.method === "GET") return listCalendarEntries(url, env);
+
+        const fromCaptureMatch = url.pathname.match(/^\/api\/calendar\/from-capture\/([^/]+)$/);
+        if (fromCaptureMatch && request.method === "POST") return createCalendarFromCapture(fromCaptureMatch[1], env);
+
+        const calendarMatch = url.pathname.match(/^\/api\/calendar\/([^/]+)(?:\/(ics))?$/);
+        if (calendarMatch && request.method === "GET" && calendarMatch[2] === "ics") return calendarIcs(calendarMatch[1], env);
+        if (calendarMatch && request.method === "GET" && !calendarMatch[2]) return getCalendarEntry(calendarMatch[1], env);
+        if (calendarMatch && request.method === "PATCH" && !calendarMatch[2]) return updateCalendarEntry(calendarMatch[1], request, env);
+        if (calendarMatch && request.method === "DELETE" && !calendarMatch[2]) return cancelCalendarEntry(calendarMatch[1], env);
 
         const match = url.pathname.match(/^\/api\/captures\/([^/]+)(?:\/(process))?$/);
         if (match && request.method === "GET" && !match[2]) return getCapture(match[1], env);
@@ -241,8 +276,8 @@ async function listTags(env: Env) {
 async function getCapture(id: string, env: Env) {
   const capture = await readCapture(id, env);
   if (!capture) return json({ ok: false, error: "Not found" }, 404);
-  const [tags, actions] = await Promise.all([readTags(id, env), readActionItems(id, env)]);
-  return json({ ok: true, capture: { ...capture, tags, action_items: actions } });
+  const [tags, actions, calendarEntry] = await Promise.all([readTags(id, env), readActionItems(id, env), readCalendarByCapture(id, env)]);
+  return json({ ok: true, capture: { ...capture, tags, action_items: actions, calendar_entry: calendarEntry } });
 }
 
 async function updateCapture(id: string, request: Request, env: Env) {
@@ -326,7 +361,7 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
     return json({ ok: true });
   }
   if (command.name === "/help") {
-    ctx.waitUntil(sendTelegramMessage(env, chatId, "Send any message to capture it as a note. Add hashtags to file it in multiple places.\n\n/work order lift #warehouse\n/task buy printer paper #work #office\n/idea local property photo service #business\n/remind call vendor Monday #work\n/today\n/search freepbx"));
+    ctx.waitUntil(sendTelegramMessage(env, chatId, "Send any message to capture it as a note. Add hashtags to file it in multiple places.\n\n/work order lift #warehouse\n/task buy printer paper #work #office\n/idea local property photo service #business\n/remind call vendor Monday #work\n/cal tomorrow 9am call vendor\n/schedule Friday 3pm-4pm work session\n/today\n/search freepbx"));
     return json({ ok: true });
   }
   if (command.name === "/today") return telegramToday(env, ctx, chatId);
@@ -337,11 +372,12 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
   if (command.name === "/search") return telegramSearch(env, ctx, chatId, command.args);
   if (!text) return json({ ok: true });
 
+  const calendarCommand = ["/cal", "/calendar", "/schedule", "/event"].includes(command.name);
   const parsed = parseTelegramText(text);
   const capture = await createCapture(env, {
-    raw_text: parsed.raw_text,
+    raw_text: calendarCommand ? text : parsed.raw_text,
     source: "telegram",
-    type: parsed.type,
+    type: calendarCommand ? "reminder" : parsed.type,
     category: parsed.category,
     external_user_id: userId,
     external_chat_id: chatId,
@@ -353,6 +389,19 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
       date: message.date || null
     }
   });
+  if (calendarCommand) {
+    const calendarEntry = await createCalendarEntryFromText(capture, command.args, env);
+    queueProcessing(env, ctx, capture.id);
+    if (!calendarEntry) {
+      ctx.waitUntil(sendTelegramMessage(env, chatId, "I saved that, but couldn't find a clear date/time. Try: /cal tomorrow 9am call vendor."));
+      return json({ ok: true });
+    }
+    const display = formatCalendarDateTime(calendarEntry);
+    const baseUrl = (env.APP_BASE_URL || "").replace(/\/$/, "");
+    const detailLink = baseUrl ? `\n${baseUrl}/calendar/${calendarEntry.id}` : "";
+    ctx.waitUntil(sendTelegramMessage(env, chatId, `Calendar candidate saved:\n${calendarEntry.title}\n${display.date}\n${display.time} (${display.duration})${detailLink}`));
+    return json({ ok: true });
+  }
   queueProcessing(env, ctx, capture.id);
   ctx.waitUntil(sendTelegramMessage(env, chatId, `Captured: ${simpleTitle(capture.raw_text)}`));
   return json({ ok: true });
@@ -377,6 +426,127 @@ async function telegramSearch(env: Env, ctx: ExecutionContext, chatId: string, q
   const text = rows.results?.length ? rows.results.map((c, i) => `${i + 1}. ${simpleTitle(c.title || c.raw_text)}`).join("\n") : "No matches.";
   ctx.waitUntil(sendTelegramMessage(env, chatId, text));
   return json({ ok: true });
+}
+
+async function listCalendarEntries(url: URL, env: Env) {
+  requireDb(env);
+  const status = url.searchParams.get("status");
+  const where = status && calendarStatuses.has(status as CalendarStatus) ? "WHERE calendar_entries.status=?" : "";
+  const rows = await env.DB!.prepare(
+    `SELECT calendar_entries.*, substr(captures.raw_text, 1, 240) AS capture_preview
+     FROM calendar_entries
+     LEFT JOIN captures ON captures.id=calendar_entries.capture_id
+     ${where}
+     ORDER BY calendar_entries.start_time ASC, calendar_entries.created_at DESC
+     LIMIT 200`
+  ).bind(...(where ? [status] : [])).all<CalendarEntry>();
+  return json({ ok: true, calendar_entries: rows.results || [] });
+}
+
+async function getCalendarEntry(id: string, env: Env) {
+  const entry = await readCalendarEntry(id, env);
+  return entry ? json({ ok: true, calendar_entry: entry }) : json({ ok: false, error: "Not found" }, 404);
+}
+
+async function createCalendarFromCapture(captureId: string, env: Env) {
+  const existing = await readCalendarByCapture(captureId, env);
+  if (existing) return json({ ok: true, calendar_entry: existing });
+  const capture = await readCapture(captureId, env);
+  if (!capture) return json({ ok: false, error: "Capture not found" }, 404);
+  const entry = await createCalendarEntryFromText(capture, capture.raw_text, env);
+  if (!entry) return json({ ok: false, error: "Couldn't find a clear date/time" }, 422);
+  return json({ ok: true, calendar_entry: entry }, 201);
+}
+
+async function createCalendarEntryFromText(capture: Capture, text: string, env: Env) {
+  const parsed = parseCalendarText(text);
+  if (!parsed) return null;
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const entry: CalendarEntry = {
+    id,
+    capture_id: capture.id,
+    title: parsed.title,
+    description: capture.raw_text,
+    location: null,
+    start_time: parsed.start_time,
+    end_time: parsed.end_time,
+    timezone: parsed.timezone,
+    all_day: parsed.all_day,
+    status: "pending",
+    source: capture.source,
+    ics_uid: `${id}@braindump.boxospam.workers.dev`,
+    created_at: now,
+    updated_at: now,
+    metadata_json: JSON.stringify({ parser: "lightweight-v1" })
+  };
+  await env.DB!.prepare(
+    `INSERT INTO calendar_entries
+     (id, capture_id, title, description, location, start_time, end_time, timezone, all_day, status, source, ics_uid, created_at, updated_at, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(entry.id, entry.capture_id, entry.title, entry.description, entry.location, entry.start_time, entry.end_time, entry.timezone, entry.all_day, entry.status, entry.source, entry.ics_uid, entry.created_at, entry.updated_at, entry.metadata_json).run();
+  return entry;
+}
+
+async function updateCalendarEntry(id: string, request: Request, env: Env) {
+  const current = await readCalendarEntry(id, env);
+  if (!current) return json({ ok: false, error: "Not found" }, 404);
+  const body = await safeJson(request);
+  const status = calendarStatuses.has(body.status) ? body.status as CalendarStatus : current.status;
+  const allDay = body.all_day === undefined ? current.all_day : body.all_day ? 1 : 0;
+  const startTime = String(body.start_time ?? current.start_time).trim();
+  const endTime = body.end_time === null ? null : String((body.end_time ?? current.end_time) || "").trim() || null;
+  if (!startTime || (!allDay && Number.isNaN(new Date(startTime).getTime()))) throw new HttpError("Valid start_time is required", 400);
+  await env.DB!.prepare(
+    `UPDATE calendar_entries
+     SET title=?, description=?, location=?, start_time=?, end_time=?, all_day=?, status=?, updated_at=?
+     WHERE id=?`
+  ).bind(
+    String(body.title ?? current.title).trim() || "Untitled BrainDump Event",
+    nullableText(body.description, current.description),
+    nullableText(body.location, current.location),
+    startTime,
+    endTime,
+    allDay,
+    status,
+    new Date().toISOString(),
+    id
+  ).run();
+  return getCalendarEntry(id, env);
+}
+
+async function cancelCalendarEntry(id: string, env: Env) {
+  const current = await readCalendarEntry(id, env);
+  if (!current) return json({ ok: false, error: "Not found" }, 404);
+  await env.DB!.prepare("UPDATE calendar_entries SET status='canceled', updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
+  return json({ ok: true, canceled: true });
+}
+
+async function calendarIcs(id: string, env: Env) {
+  const entry = await readCalendarEntry(id, env);
+  if (!entry) return json({ ok: false, error: "Not found" }, 404);
+  const ics = generateIcs(entry);
+  return new Response(ics, {
+    headers: {
+      "Content-Type": "text/calendar; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="braindump-event.ics"'
+    }
+  });
+}
+
+async function readCalendarEntry(id: string, env: Env) {
+  requireDb(env);
+  return env.DB!.prepare(
+    `SELECT calendar_entries.*, substr(captures.raw_text, 1, 240) AS capture_preview
+     FROM calendar_entries
+     LEFT JOIN captures ON captures.id=calendar_entries.capture_id
+     WHERE calendar_entries.id=?`
+  ).bind(id).first<CalendarEntry>();
+}
+
+async function readCalendarByCapture(captureId: string, env: Env) {
+  requireDb(env);
+  return env.DB!.prepare("SELECT * FROM calendar_entries WHERE capture_id=? ORDER BY created_at DESC LIMIT 1").bind(captureId).first<CalendarEntry>();
 }
 
 function parseTelegramText(text: string): { type: CaptureType; category?: string | null; raw_text: string } {
@@ -562,6 +732,12 @@ function sanitizeCategory(value: unknown) {
 function sanitizeTag(value: unknown) {
   const tag = String(value || "").trim().replace(/^#/, "").toLowerCase();
   return tag || null;
+}
+
+function nullableText(value: unknown, fallback?: string | null) {
+  if (value === undefined) return fallback || null;
+  const text = String(value || "").trim();
+  return text || null;
 }
 
 function tagsFromText(text: string) {

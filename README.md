@@ -49,6 +49,17 @@ Use `/work` when the item belongs in the work grouping:
 
 `/work` saves the capture as a `task` and sets the category to `work`.
 
+Create calendar candidates from Telegram:
+
+```text
+/cal tomorrow 9am call vendor
+/calendar Friday 3pm dentist appointment
+/schedule next Tuesday 1pm-2pm work on BrainDump UI
+/event June 15 6pm dinner with family
+```
+
+Calendar commands save the original Telegram message as a capture first. BrainDump then parses the date in `America/Chicago`, creates a pending calendar candidate, and provides an `.ics` download. Google Calendar OAuth is not required.
+
 Use hashtags to file one message in one or more tag groups:
 
 ```text
@@ -366,8 +377,10 @@ POST /api/captures/:id/process
 - `/reminders` Reminders
 - `/projects` Projects
 - `/review` Processed captures for review
+- `/calendar` Calendar candidates and `.ics` export
 - `/settings` Setup references
 - `/api/captures` Capture API
+- `/api/calendar` Calendar candidate API
 - `/telegram/webhook` Telegram webhook
 - `/health` Health check
 

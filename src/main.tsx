@@ -17,6 +17,22 @@ type Capture = {
   created_at: string;
   tags?: string[];
   action_items?: ActionItem[];
+  calendar_entry?: CalendarEntry | null;
+};
+
+type CalendarEntry = {
+  id: string;
+  capture_id?: string | null;
+  title: string;
+  description?: string | null;
+  location?: string | null;
+  start_time: string;
+  end_time?: string | null;
+  timezone: string;
+  all_day: number;
+  status: "pending" | "exported" | "created" | "canceled" | "failed";
+  source: string;
+  capture_preview?: string | null;
 };
 
 type ActionItem = {
@@ -31,6 +47,8 @@ type CaptureResponse = { capture: Capture };
 type StatsResponse = { today: number; openTasks: number; unprocessed: number; ideasWeek: number };
 type TagSummary = { name: string; count: number };
 type TagsResponse = { tags?: TagSummary[] };
+type CalendarListResponse = { calendar_entries?: CalendarEntry[] };
+type CalendarResponse = { calendar_entry: CalendarEntry };
 
 const typeOptions = ["note", "task", "idea", "reminder", "question", "project"];
 const categoryOptions = ["work"];
@@ -99,7 +117,7 @@ function App() {
           <span className="brand-mark">B</span>
           <span>BrainDump</span>
         </button>
-        {["/feed", "/work", "/tasks", "/ideas", "/reminders", "/review", "/chat", "/settings"].map((item) => (
+        {["/feed", "/work", "/tasks", "/ideas", "/reminders", "/calendar", "/review", "/chat", "/settings"].map((item) => (
           <button key={item} className={route === item ? "active" : ""} onClick={() => nav(item)}>
             {item.slice(1)}
           </button>
@@ -116,8 +134,10 @@ function App() {
         {route === "/projects" && <Feed fixedType="project" title="Projects" />}
         {route === "/archive" && <Feed title="Archive" initialStatus="archived" includeClosed />}
         {route === "/review" && <ReviewPage />}
+        {route === "/calendar" && <CalendarPage />}
         {route === "/chat" && <ChatBridge />}
         {route.startsWith("/capture/") && <CaptureDetail id={route.split("/")[2]} />}
+        {route.startsWith("/calendar/") && <CalendarDetail id={route.split("/")[2]} />}
         {route === "/settings" && <Settings />}
       </main>
     </div>
@@ -430,6 +450,162 @@ function ChatBridge() {
   );
 }
 
+function CalendarPage() {
+  const [items, setItems] = useState<CalendarEntry[]>([]);
+  const [rawText, setRawText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  async function load() {
+    const data = await fetch("/api/calendar").then((r) => r.json() as Promise<CalendarListResponse>);
+    setItems(data.calendar_entries || []);
+  }
+  useEffect(() => { load(); }, []);
+  async function create(e: FormEvent) {
+    e.preventDefault();
+    if (!rawText.trim()) return;
+    setSaving(true);
+    setMessage("");
+    const captureRes = await fetch("/api/captures", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_text: rawText, source: "web", type_hint: "reminder" })
+    });
+    if (!captureRes.ok) {
+      setMessage("Could not save the capture.");
+      setSaving(false);
+      return;
+    }
+    const captureData = await captureRes.json() as CaptureResponse;
+    const calendarRes = await fetch(`/api/calendar/from-capture/${captureData.capture.id}`, { method: "POST" });
+    if (calendarRes.ok) {
+      setRawText("");
+      setMessage("Calendar candidate saved.");
+      await load();
+    } else {
+      setMessage("Capture saved, but no clear date/time was found. Try: tomorrow 9am call vendor.");
+    }
+    setSaving(false);
+  }
+  const pending = items.filter((item) => item.status === "pending");
+  const completed = items.filter((item) => item.status === "exported" || item.status === "created");
+  const failed = items.filter((item) => item.status === "failed" || item.status === "canceled");
+  return (
+    <section className="main-column calendar-page">
+      <header className="topline"><div><p className="eyebrow">Calendar candidates</p><h1>Calendar</h1></div></header>
+      <form className="card calendar-capture" onSubmit={create}>
+        <label htmlFor="calendar-capture">Create from a capture</label>
+        <textarea id="calendar-capture" placeholder="tomorrow 9am call website vendor" value={rawText} onChange={(e) => setRawText(e.target.value)} />
+        <div className="capture-actions"><button disabled={saving || !rawText.trim()}>{saving ? "Saving..." : "Create candidate"}</button></div>
+        {message && <p className={message.startsWith("Calendar") ? "toast" : "helper-text"}>{message}</p>}
+      </form>
+      <CalendarGroup title="Pending" items={pending} onChanged={load} empty="No pending calendar candidates." />
+      <CalendarGroup title="Exported / created" items={completed} onChanged={load} empty="No exported entries yet." />
+      <CalendarGroup title="Failed / canceled" items={failed} onChanged={load} empty="No failed entries." />
+    </section>
+  );
+}
+
+function CalendarGroup({ title, items, onChanged, empty }: { title: string; items: CalendarEntry[]; onChanged: () => void; empty: string }) {
+  return (
+    <section className="calendar-group">
+      <h2>{title}</h2>
+      {items.length ? <div className="calendar-list">{items.map((item) => <CalendarCard key={item.id} item={item} onChanged={onChanged} />)}</div> : <div className="empty">{empty}</div>}
+    </section>
+  );
+}
+
+function CalendarCard({ item, onChanged }: { item: CalendarEntry; onChanged: () => void }) {
+  const display = calendarDisplay(item);
+  async function markExported() {
+    await fetch(`/api/calendar/${item.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "exported" })
+    });
+    onChanged();
+  }
+  async function cancel() {
+    await fetch(`/api/calendar/${item.id}`, { method: "DELETE" });
+    onChanged();
+  }
+  return (
+    <article id={item.id} className="card calendar-card">
+      <div className="row-top">
+        <span className={`status-badge calendar-${item.status}`}>{item.status}</span>
+        <span className="type-badge reminder">{sourceLabel(item.source)}</span>
+      </div>
+      <a className="calendar-title" href={`/calendar/${item.id}`}><h3>{item.title}</h3></a>
+      <p className="calendar-when">{display.date}<br />{display.time} · {display.duration}</p>
+      {item.location && <p>{item.location}</p>}
+      {item.capture_preview && <p className="calendar-preview">{item.capture_preview}</p>}
+      <div className="calendar-actions">
+        <a className="link-button" href={`/api/calendar/${item.id}/ics`}>Download .ics</a>
+        {item.status === "pending" && <button onClick={markExported}>Mark done / exported</button>}
+        {item.status !== "canceled" && <button className="muted" onClick={cancel}>Cancel</button>}
+      </div>
+    </article>
+  );
+}
+
+function CalendarDetail({ id }: { id: string }) {
+  const [entry, setEntry] = useState<CalendarEntry | null>(null);
+  const [message, setMessage] = useState("");
+  async function load() {
+    const res = await fetch(`/api/calendar/${id}`);
+    if (res.ok) setEntry((await res.json() as CalendarResponse).calendar_entry);
+  }
+  useEffect(() => { load(); }, [id]);
+  if (!entry) return <div>Loading...</div>;
+  async function save() {
+    const res = await fetch(`/api/calendar/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry)
+    });
+    setMessage(res.ok ? "Saved." : "Could not save.");
+    if (res.ok) load();
+  }
+  return (
+    <section className="card editor">
+      <p className="eyebrow">Calendar entry</p>
+      <input placeholder="Title" value={entry.title} onChange={(e) => setEntry({ ...entry, title: e.target.value })} />
+      <textarea placeholder="Description" value={entry.description || ""} onChange={(e) => setEntry({ ...entry, description: e.target.value })} />
+      <input placeholder="Location" value={entry.location || ""} onChange={(e) => setEntry({ ...entry, location: e.target.value })} />
+      <div className="grid calendar-edit-grid">
+        <input aria-label="Start time" value={entry.start_time} onChange={(e) => setEntry({ ...entry, start_time: e.target.value })} />
+        <input aria-label="End time" value={entry.end_time || ""} onChange={(e) => setEntry({ ...entry, end_time: e.target.value })} />
+        <select value={entry.status} onChange={(e) => setEntry({ ...entry, status: e.target.value as CalendarEntry["status"] })}>
+          {["pending", "exported", "created", "canceled", "failed"].map((status) => <option key={status}>{status}</option>)}
+        </select>
+        <label className="check-field"><input type="checkbox" checked={Boolean(entry.all_day)} onChange={(e) => setEntry({ ...entry, all_day: e.target.checked ? 1 : 0 })} /> All day</label>
+      </div>
+      <div className="calendar-actions">
+        <button onClick={save}>Save changes</button>
+        <a className="link-button" href={`/api/calendar/${entry.id}/ics`}>Download .ics</a>
+        {entry.capture_id && <a className="link-button" href={`/capture/${entry.capture_id}`}>Open capture</a>}
+      </div>
+      {message && <p className="toast">{message}</p>}
+    </section>
+  );
+}
+
+function calendarDisplay(entry: CalendarEntry) {
+  if (entry.all_day) {
+    const date = new Date(`${entry.start_time.slice(0, 10)}T12:00:00Z`);
+    return { date: date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }), time: "All day", duration: "All day" };
+  }
+  const start = new Date(entry.start_time);
+  const end = entry.end_time ? new Date(entry.end_time) : new Date(start.getTime() + 30 * 60000);
+  const options = { timeZone: entry.timezone || "America/Chicago" };
+  const minutes = Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+  const duration = minutes >= 60 ? `${Math.floor(minutes / 60)} hr${minutes % 60 ? ` ${minutes % 60} min` : ""}` : `${minutes} min`;
+  return {
+    date: start.toLocaleDateString([], { ...options, weekday: "short", month: "short", day: "numeric", year: "numeric" }),
+    time: `${start.toLocaleTimeString([], { ...options, hour: "numeric", minute: "2-digit" })}-${end.toLocaleTimeString([], { ...options, hour: "numeric", minute: "2-digit" })}`,
+    duration
+  };
+}
+
 function CaptureDetail({ id }: { id: string }) {
   const [capture, setCapture] = useState<Capture | null>(null);
   const [tags, setTags] = useState("");
@@ -473,6 +649,12 @@ function CaptureDetail({ id }: { id: string }) {
       <datalist id="category-options">{categoryOptions.map((c) => <option key={c} value={c} />)}</datalist>
       <input placeholder="Tags, comma separated" value={tags} onChange={(e) => setTags(e.target.value)} />
       <textarea placeholder="Action items, one per line" value={actions} onChange={(e) => setActions(e.target.value)} />
+      {capture.calendar_entry && (
+        <section className="linked-calendar">
+          <p className="eyebrow">Linked calendar entry</p>
+          <CalendarCard item={capture.calendar_entry} onChanged={load} />
+        </section>
+      )}
       <div className="capture-actions">
         <button onClick={save}>Save changes</button>
         <button type="button" onClick={process}>Reprocess with AI</button>
