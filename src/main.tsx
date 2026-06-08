@@ -495,7 +495,6 @@ function CalendarPage() {
       return;
     }
     if (popup) {
-      popup.opener = null;
       popup.location.replace(data.authorization_url);
     } else {
       window.location.assign(data.authorization_url);

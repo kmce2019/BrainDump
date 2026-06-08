@@ -569,8 +569,7 @@ async function googleCalendarStatus(env: Env) {
 
 async function googleOauthConnect(url: URL, env: Env) {
   requireGoogleConfig(env);
-  const state = crypto.randomUUID();
-  const signature = await signOauthState(state, env);
+  const state = await createOauthState(env);
   const params = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID!,
     redirect_uri: googleRedirectUri(env),
@@ -582,37 +581,35 @@ async function googleOauthConnect(url: URL, env: Env) {
     state
   });
   const authorizationUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
-  const cookie = oauthStateCookie(`${state}.${signature}`, 600);
   if (url.searchParams.get("format") === "json") {
-    return json({ ok: true, authorization_url: authorizationUrl }, 200, {
-      "Cache-Control": "no-store",
-      "Set-Cookie": cookie
-    });
+    return json({ ok: true, authorization_url: authorizationUrl }, 200, { "Cache-Control": "no-store" });
   }
-  return redirectWithCookie(authorizationUrl, cookie);
+  return redirectPage(authorizationUrl);
 }
 
 async function googleOauthCallback(request: Request, env: Env) {
-  if (!(await isWebAuthed(request, env))) return new Response("Unauthorized", { status: 401 });
   requireGoogleConfig(env);
   const url = new URL(request.url);
   const error = url.searchParams.get("error");
-  if (error) return redirectWithCookie(`/calendar?google=error&reason=${encodeURIComponent(error)}`, oauthStateCookie("", 0));
+  if (error) return redirectPage(`/calendar?google=error&reason=${encodeURIComponent(error)}`);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  const cookieState = cookieValue(request, "bd_google_oauth");
-  if (!code || !state || !cookieState || !(await validOauthState(state, cookieState, env))) {
-    return new Response("Invalid or expired OAuth state", { status: 400 });
+  if (!code || !state || !(await validOauthState(state, env))) {
+    return oauthResultPage("Google Calendar connection failed", "The authorization request was invalid or expired.", "/calendar?google=error");
   }
-  const token = await googleTokenRequest({
-    client_id: env.GOOGLE_CLIENT_ID!,
-    client_secret: env.GOOGLE_CLIENT_SECRET!,
-    code,
-    grant_type: "authorization_code",
-    redirect_uri: googleRedirectUri(env)
-  });
-  await saveGoogleCredentials(token, env);
-  return redirectWithCookie("/calendar?google=connected", oauthStateCookie("", 0));
+  try {
+    const token = await googleTokenRequest({
+      client_id: env.GOOGLE_CLIENT_ID!,
+      client_secret: env.GOOGLE_CLIENT_SECRET!,
+      code,
+      grant_type: "authorization_code",
+      redirect_uri: googleRedirectUri(env)
+    });
+    await saveGoogleCredentials(token, env);
+    return oauthResultPage("Google Calendar connected", "You can close this window and return to BrainDump.", "/calendar?google=connected");
+  } catch (error) {
+    return oauthResultPage("Google Calendar connection failed", error instanceof Error ? error.message : "Token exchange failed.", "/calendar?google=error");
+  }
 }
 
 async function googleOauthDisconnect(env: Env) {
@@ -774,31 +771,30 @@ function googleRedirectUri(env: Env) {
   return `${(env.APP_BASE_URL || "https://braindump.boxospam.workers.dev").replace(/\/$/, "")}/api/auth/google/callback`;
 }
 
-async function signOauthState(state: string, env: Env) {
+async function signOauthState(value: string, env: Env) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.APP_PASSWORD || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(state));
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
   return base64Url(new Uint8Array(signature));
 }
 
-async function validOauthState(state: string, cookieState: string, env: Env) {
-  const [cookieValue, signature] = cookieState.split(".");
-  return cookieValue === state && signature === await signOauthState(state, env);
+async function createOauthState(env: Env) {
+  const value = `${crypto.randomUUID()}.${Date.now()}`;
+  return `${value}.${await signOauthState(value, env)}`;
+}
+
+async function validOauthState(state: string, env: Env) {
+  const [nonce, timestamp, signature] = state.split(".");
+  if (!nonce || !timestamp || !signature) return false;
+  const issuedAt = Number(timestamp);
+  if (!Number.isFinite(issuedAt) || issuedAt > Date.now() + 60000 || Date.now() - issuedAt > 600000) return false;
+  return signature === await signOauthState(`${nonce}.${timestamp}`, env);
 }
 
 function base64Url(value: Uint8Array) {
   return btoa(String.fromCharCode(...value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function cookieValue(request: Request, name: string) {
-  const cookie = request.headers.get("Cookie") || "";
-  return cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || "";
-}
-
-function oauthStateCookie(value: string, maxAge: number) {
-  return `bd_google_oauth=${value}; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/google/callback; Max-Age=${maxAge}`;
-}
-
-function redirectWithCookie(location: string, cookie: string) {
+function redirectPage(location: string) {
   const safeLocation = escapeHtml(location);
   const scriptLocation = JSON.stringify(location).replace(/</g, "\\u003c");
   return new Response(
@@ -820,10 +816,33 @@ function redirectWithCookie(location: string, cookie: string) {
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-        "Set-Cookie": cookie
+        "Cache-Control": "no-store"
       }
     }
+  );
+}
+
+function oauthResultPage(title: string, message: string, location: string) {
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
+  const safeLocation = escapeHtml(location);
+  return new Response(
+    `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${safeTitle}</title></head>
+<body style="font-family:system-ui,sans-serif;background:#000;color:#fff;padding:2rem">
+  <h1>${safeTitle}</h1>
+  <p>${safeMessage}</p>
+  <p><a style="color:#fff" href="${safeLocation}">Return to BrainDump</a></p>
+  <script>
+    if (window.opener) {
+      window.opener.location.href = ${JSON.stringify(location)};
+      window.setTimeout(() => window.close(), 500);
+    }
+  </script>
+</body>
+</html>`,
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } }
   );
 }
 
