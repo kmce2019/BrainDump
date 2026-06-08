@@ -70,6 +70,7 @@ const statuses = new Set(["inbox", "active", "done", "dismissed", "archived"]);
 const processingStatuses = new Set(["unprocessed", "queued", "processing", "processed", "failed"]);
 const sources = new Set(["web", "api", "shortcut", "telegram", "email", "sms"]);
 const calendarStatuses = new Set<CalendarStatus>(["pending", "exported", "created", "canceled", "failed"]);
+let calendarSchemaPromise: Promise<void> | null = null;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -430,6 +431,7 @@ async function telegramSearch(env: Env, ctx: ExecutionContext, chatId: string, q
 
 async function listCalendarEntries(url: URL, env: Env) {
   requireDb(env);
+  await ensureCalendarSchema(env);
   const status = url.searchParams.get("status");
   const where = status && calendarStatuses.has(status as CalendarStatus) ? "WHERE calendar_entries.status=?" : "";
   const rows = await env.DB!.prepare(
@@ -461,6 +463,7 @@ async function createCalendarFromCapture(captureId: string, env: Env) {
 async function createCalendarEntryFromText(capture: Capture, text: string, env: Env) {
   const parsed = parseCalendarText(text);
   if (!parsed) return null;
+  await ensureCalendarSchema(env);
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const entry: CalendarEntry = {
@@ -536,6 +539,7 @@ async function calendarIcs(id: string, env: Env) {
 
 async function readCalendarEntry(id: string, env: Env) {
   requireDb(env);
+  await ensureCalendarSchema(env);
   return env.DB!.prepare(
     `SELECT calendar_entries.*, substr(captures.raw_text, 1, 240) AS capture_preview
      FROM calendar_entries
@@ -546,7 +550,44 @@ async function readCalendarEntry(id: string, env: Env) {
 
 async function readCalendarByCapture(captureId: string, env: Env) {
   requireDb(env);
+  await ensureCalendarSchema(env);
   return env.DB!.prepare("SELECT * FROM calendar_entries WHERE capture_id=? ORDER BY created_at DESC LIMIT 1").bind(captureId).first<CalendarEntry>();
+}
+
+async function ensureCalendarSchema(env: Env) {
+  requireDb(env);
+  if (!calendarSchemaPromise) {
+    calendarSchemaPromise = env.DB!.batch([
+      env.DB!.prepare(
+        `CREATE TABLE IF NOT EXISTS calendar_entries (
+          id TEXT PRIMARY KEY,
+          capture_id TEXT,
+          title TEXT NOT NULL,
+          description TEXT,
+          location TEXT,
+          start_time TEXT NOT NULL,
+          end_time TEXT,
+          timezone TEXT DEFAULT 'America/Chicago',
+          all_day INTEGER DEFAULT 0,
+          status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'exported', 'created', 'canceled', 'failed')),
+          source TEXT DEFAULT 'telegram',
+          external_calendar_id TEXT,
+          external_event_id TEXT,
+          ics_uid TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          metadata_json TEXT
+        )`
+      ),
+      env.DB!.prepare("CREATE INDEX IF NOT EXISTS idx_calendar_entries_capture_id ON calendar_entries(capture_id)"),
+      env.DB!.prepare("CREATE INDEX IF NOT EXISTS idx_calendar_entries_status ON calendar_entries(status)"),
+      env.DB!.prepare("CREATE INDEX IF NOT EXISTS idx_calendar_entries_start_time ON calendar_entries(start_time)")
+    ]).then(() => undefined).catch((error) => {
+      calendarSchemaPromise = null;
+      throw error;
+    });
+  }
+  await calendarSchemaPromise;
 }
 
 function parseTelegramText(text: string): { type: CaptureType; category?: string | null; raw_text: string } {
