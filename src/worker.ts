@@ -94,7 +94,7 @@ export default {
         if (url.pathname === "/api/captures" && request.method === "GET") return listCaptures(url, env);
         if (url.pathname === "/api/calendar" && request.method === "GET") return listCalendarEntries(url, env);
         if (url.pathname === "/api/calendar/google/status" && request.method === "GET") return googleCalendarStatus(env);
-        if (url.pathname === "/api/calendar/google/connect" && request.method === "GET") return googleOauthConnect(env);
+        if (url.pathname === "/api/calendar/google/connect" && request.method === "GET") return googleOauthConnect(url, env);
         if (url.pathname === "/api/calendar/google/disconnect" && request.method === "POST") return googleOauthDisconnect(env);
 
         const fromCaptureMatch = url.pathname.match(/^\/api\/calendar\/from-capture\/([^/]+)$/);
@@ -567,7 +567,7 @@ async function googleCalendarStatus(env: Env) {
   });
 }
 
-async function googleOauthConnect(env: Env) {
+async function googleOauthConnect(url: URL, env: Env) {
   requireGoogleConfig(env);
   const state = crypto.randomUUID();
   const signature = await signOauthState(state, env);
@@ -581,7 +581,15 @@ async function googleOauthConnect(env: Env) {
     prompt: "consent",
     state
   });
-  return redirectWithCookie(`https://accounts.google.com/o/oauth2/v2/auth?${params}`, oauthStateCookie(`${state}.${signature}`, 600));
+  const authorizationUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+  const cookie = oauthStateCookie(`${state}.${signature}`, 600);
+  if (url.searchParams.get("format") === "json") {
+    return json({ ok: true, authorization_url: authorizationUrl }, 200, {
+      "Cache-Control": "no-store",
+      "Set-Cookie": cookie
+    });
+  }
+  return redirectWithCookie(authorizationUrl, cookie);
 }
 
 async function googleOauthCallback(request: Request, env: Env) {

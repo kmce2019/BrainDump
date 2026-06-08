@@ -480,6 +480,27 @@ function CalendarPage() {
     setMessage("Google Calendar disconnected.");
     load();
   }
+  async function connectGoogle() {
+    setMessage("");
+    const popup = window.open("about:blank", "braindump-google-calendar");
+    if (popup) {
+      popup.document.title = "Connecting Google Calendar";
+      popup.document.body.textContent = "Opening Google authorization...";
+    }
+    const response = await fetch("/api/calendar/google/connect?format=json");
+    const data = await response.json().catch(() => ({})) as { authorization_url?: string; error?: string };
+    if (!response.ok || !data.authorization_url) {
+      popup?.close();
+      setMessage(data.error || "Could not start Google Calendar authorization.");
+      return;
+    }
+    if (popup) {
+      popup.opener = null;
+      popup.location.replace(data.authorization_url);
+    } else {
+      window.location.assign(data.authorization_url);
+    }
+  }
   async function create(e: FormEvent) {
     e.preventDefault();
     if (!rawText.trim()) return;
@@ -520,7 +541,7 @@ function CalendarPage() {
         </div>
         {google.connected
           ? <button className="muted" onClick={disconnectGoogle}>Disconnect</button>
-          : <a className={`link-button${google.configured ? "" : " disabled"}`} href={google.configured ? "/api/calendar/google/connect" : undefined}>Connect Google Calendar</a>}
+          : <button className={google.configured ? "" : "muted"} disabled={!google.configured} onClick={connectGoogle}>Connect Google Calendar</button>}
       </section>
       <form className="card calendar-capture" onSubmit={create}>
         <label htmlFor="calendar-capture">Create from a capture</label>
