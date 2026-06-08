@@ -224,7 +224,11 @@ function removeRanges(text: string, ranges: Array<[number, number]>) {
   for (const [start, end] of ranges) {
     for (let i = start; i < end; i++) chars[i] = " ";
   }
-  return chars.join("").replace(/\s+/g, " ").replace(/^[\s,;:-]+|[\s,;:-]+$/g, "").trim();
+  return chars.join("")
+    .replace(/\s+/g, " ")
+    .replace(/\b(?:at|on)\s+(?=for\b|$)/gi, "")
+    .replace(/^[\s,;:-]+|[\s,;:-]+$/g, "")
+    .trim();
 }
 
 function inferredYear(today: DateParts, month: number, day: number) {

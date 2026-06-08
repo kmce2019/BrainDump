@@ -408,7 +408,19 @@ async function telegramWebhook(request: Request, env: Env, ctx: ExecutionContext
     const display = formatCalendarDateTime(calendarEntry);
     const baseUrl = (env.APP_BASE_URL || "").replace(/\/$/, "");
     const detailLink = baseUrl ? `\n${baseUrl}/calendar/${calendarEntry.id}` : "";
-    ctx.waitUntil(sendTelegramMessage(env, chatId, `Calendar candidate saved:\n${calendarEntry.title}\n${display.date}\n${display.time} (${display.duration})${detailLink}`));
+    const googleCredentials = await readGoogleCredentials(env);
+    if (googleCredentials?.refresh_token || googleCredentials?.access_token) {
+      try {
+        const googleEvent = await insertGoogleCalendarEvent(calendarEntry, env);
+        const googleLink = googleEvent.html_link ? `\n${googleEvent.html_link}` : "";
+        ctx.waitUntil(sendTelegramMessage(env, chatId, `Created in Google Calendar:\n${calendarEntry.title}\n${display.date}\n${display.time} (${display.duration})${googleLink}${detailLink}`));
+      } catch (error) {
+        ctx.waitUntil(sendTelegramMessage(env, chatId, `Calendar candidate saved, but Google Calendar creation failed: ${error instanceof Error ? error.message : "Unknown error"}${detailLink}`));
+      }
+    } else {
+      const connectLink = baseUrl ? `\nConnect Google Calendar: ${baseUrl}/calendar` : "";
+      ctx.waitUntil(sendTelegramMessage(env, chatId, `Calendar candidate saved:\n${calendarEntry.title}\n${display.date}\n${display.time} (${display.duration})\nGoogle Calendar is not connected.${connectLink}${detailLink}`));
+    }
     return json({ ok: true });
   }
   queueProcessing(env, ctx, capture.id);
@@ -612,6 +624,11 @@ async function googleOauthDisconnect(env: Env) {
 async function createGoogleCalendarEvent(id: string, env: Env) {
   const entry = await readCalendarEntry(id, env);
   if (!entry) return json({ ok: false, error: "Not found" }, 404);
+  const googleEvent = await insertGoogleCalendarEvent(entry, env);
+  return json({ ok: true, calendar_entry: await readCalendarEntry(id, env), google_event: googleEvent });
+}
+
+async function insertGoogleCalendarEvent(entry: CalendarEntry, env: Env) {
   if (entry.status === "canceled") throw new HttpError("Canceled entries cannot be created", 409);
   if (entry.external_event_id) throw new HttpError("This entry already has a Google Calendar event", 409);
   const accessToken = await googleAccessToken(env);
@@ -626,15 +643,15 @@ async function createGoogleCalendarEvent(id: string, env: Env) {
   const result = await response.json<Record<string, any>>();
   if (!response.ok) {
     await env.DB!.prepare("UPDATE calendar_entries SET status='failed', metadata_json=?, updated_at=? WHERE id=?")
-      .bind(JSON.stringify({ google_error: result }), new Date().toISOString(), id).run();
+      .bind(JSON.stringify({ google_error: result }), new Date().toISOString(), entry.id).run();
     throw new HttpError(result.error?.message || "Google Calendar event creation failed", response.status);
   }
   await env.DB!.prepare(
     `UPDATE calendar_entries
      SET status='created', external_calendar_id='primary', external_event_id=?, metadata_json=?, updated_at=?
      WHERE id=?`
-  ).bind(result.id || null, JSON.stringify({ google_html_link: result.htmlLink || null }), new Date().toISOString(), id).run();
-  return json({ ok: true, calendar_entry: await readCalendarEntry(id, env), google_event: { id: result.id, html_link: result.htmlLink || null } });
+  ).bind(result.id || null, JSON.stringify({ google_html_link: result.htmlLink || null }), new Date().toISOString(), entry.id).run();
+  return { id: result.id, html_link: result.htmlLink || null };
 }
 
 function googleEventPayload(entry: CalendarEntry) {
